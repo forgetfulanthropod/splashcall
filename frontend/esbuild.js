@@ -5,6 +5,7 @@ const { exec } = require("child_process")
 const fs = require('fs')
 const path = require('path')
 const envFile = require("dotenv").config()
+const parsedEnv = envFile.parsed || {}
 
 const buildDir = "build"
 const all_keys = [
@@ -24,14 +25,14 @@ const all_keys = [
 const args = process.argv.slice(2)
 const shouldWatch = args.length === 1 && args[0] === 'watch'
 
-const isProduction = envFile.parsed.ESBUILD_NODE_ENV === "production"
-envFile.parsed.NODE_ENV = isProduction ? "production" : "development"
-const shouldDoIos = envFile.parsed.ESBUILD_DO_IOS === "yes"
-const iosTarget = envFile.parsed.ESBUILD_IOS_TARGET
-const shouldOpenChrome = envFile.parsed.ESBUILD_OPEN_CHROME === "yes"
+const isProduction = parsedEnv.ESBUILD_NODE_ENV === "production"
+parsedEnv.NODE_ENV = isProduction ? "production" : "development"
+const shouldDoIos = parsedEnv.ESBUILD_DO_IOS === "yes"
+const iosTarget = parsedEnv.ESBUILD_IOS_TARGET
+const shouldOpenChrome = parsedEnv.ESBUILD_OPEN_CHROME === "yes"
 const envObj = {}
 all_keys.forEach(k => envObj["process.env." + k] = null)
-Object.entries(envFile.parsed).forEach(([k, v]) => envObj["process.env." + k] = '"' + v + '"')
+Object.entries(parsedEnv).forEach(([k, v]) => envObj["process.env." + k] = '"' + v + '"')
 console.log(envObj)
 main()
 

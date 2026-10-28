@@ -3,7 +3,7 @@
 import { addDataConnection, closeDataConnections, emitDataEvent, onDataEvent } from './dataConn'
 import Peer, { MediaConnection } from 'peerjs'
 import { getUserMedia, relinquishUserMedia } from './AudioManager'
-import { backendUrl, isLocal } from '../environment'
+import { backendUrl, isLocal, platform } from '../environment'
 import { sleep } from '../utils'
 import toast from 'react-hot-toast'
 
@@ -290,6 +290,10 @@ function pageHostname(): string | null {
 }
 
 function isLocalPage(): boolean {
+    // The native app is served from https://localhost inside the WebView.
+    // That hostname is not a development machine, so it must not select the
+    // local peer server (port 9000). Otherwise calls on a phone never leave the device.
+    if (platform !== 'web') return false
     const hostname = pageHostname()
     return hostname === 'localhost' || hostname === '127.0.0.1'
 }

@@ -1,26 +1,22 @@
 import { CapacitorConfig } from '@capacitor/cli'
-import dotenv from "dotenv"
+import dotenv from 'dotenv'
+
 const envFile = dotenv.config()
-
-
-const url = envFile?.parsed?.CAP_SERVER_URL
+// Prefer the process environment so cloud builds can set this without a .env file.
+const serverUrl = process.env.CAP_SERVER_URL || envFile.parsed?.CAP_SERVER_URL
 
 const config: CapacitorConfig = {
-  "appId": "com.splashcall.app",
-  "appName": "SplashCall",
-  "webDir": url == null ? "build" : undefined,
-  "bundledWebRuntime": false,
-  "server": url == null ? undefined : {
-    // serve files from network port instead of filesystem
-    "url": url,
-    "cleartext": false,
-  },
-
-  // "plugins": {
-  //   "PushNotifications": {
-  //     "presentationOptions": ["badge", "sound", "alert"],
-  //   },
-  // },
+  appId: 'com.splashcall.app',
+  appName: 'SplashCall',
+  webDir: 'build',
+  server: serverUrl
+    ? {
+        // Load the site from a URL instead of the files packed into the app.
+        // Used for a live-reload shell. Leave unset for normal cloud builds.
+        url: serverUrl,
+        cleartext: serverUrl.startsWith('http://'),
+      }
+    : undefined,
 }
 
 export default config
