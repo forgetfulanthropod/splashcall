@@ -59,10 +59,7 @@ jobs:
         run: bash scripts/validate-mobile-config.sh
 
       - name: Install Android SDK
-        run: |
-          bash scripts/install-android-sdk.sh
-          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+        run: bash scripts/install-android-sdk.sh
 
       - name: Build debug APK
         env:

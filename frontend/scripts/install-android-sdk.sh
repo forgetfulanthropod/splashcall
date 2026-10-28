@@ -26,3 +26,11 @@ yes | "$sdkmanager" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
 echo "Android SDK ready at $SDK_ROOT"
 echo "export ANDROID_SDK_ROOT=$SDK_ROOT"
 echo "export ANDROID_HOME=$SDK_ROOT"
+
+# GitHub Actions only passes these to later steps when they are written here.
+# Do not hardcode a path in the workflow: this script may use the SDK that is
+# already on the runner (for example /usr/local/lib/android/sdk).
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+  echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+fi
