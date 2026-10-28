@@ -1,0 +1,118 @@
+/* eslint-disable */
+import React, { useEffect, useRef } from 'react'
+import * as BABYLON from 'babylonjs'
+
+export default function Strikers() {
+    const canvasRef = useRef(null)
+    useEffect(() => {
+        if (!canvasRef.current) { return }
+        const canvas = canvasRef.current
+        const engine = new BABYLON.Engine(canvas, true) // Generate the BABYLON 3D engine
+        const scene = createScene(engine) // Call the createScene function
+        engine.runRenderLoop(() => scene.render())
+        const resize = () => scene.getEngine().resize()
+        if (window) {
+            window.addEventListener('resize', resize)
+        }
+        return () => {
+            scene.getEngine().dispose()
+
+            if (window) {
+                window.removeEventListener('resize', resize)
+            }
+        }
+    }, [canvasRef])
+    return <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />
+}
+
+function createScene(engine) {
+    const scene = new BABYLON.Scene(engine)
+    const camera = new BABYLON.FreeCamera('camera1', new BABYLON.Vector3(0, 22, 0), scene)
+    camera.setTarget(BABYLON.Vector3.Zero())
+    const light = new BABYLON.DirectionalLight('light', new BABYLON.Vector3(0, -1, 0), scene)
+    light.intensity = 0.7
+    const ground = BABYLON.MeshBuilder.CreateGround('ground', { width: 9, height: 16 }, scene)
+
+    let startingPoint // TODO: Do globals cause scene loss on interface change
+    let currentMesh
+
+    const createStriker = function () {
+
+        const root = new BABYLON.TransformNode('root')
+
+        const red = new BABYLON.Color4(1, 0, 0, 0.5)
+        const blue = new BABYLON.Color4(0, 0, 1, .5)
+
+        const cylinder = BABYLON.MeshBuilder.CreateCylinder('cylinder', { diameter: 2, height: 0.9, faceColors: [red, red, red] }, scene)
+        const cylinder2 = BABYLON.MeshBuilder.CreateCylinder('cylinder2', { diameter: 1, height: 1, faceColors: [blue, blue, blue] }, scene)
+        cylinder.parent = root
+        cylinder2.parent = root
+        currentMesh = root
+        root.position.y = 1
+        startingPoint = getGroundPosition()
+
+        root.position.x = startingPoint.x
+        root.position.z = startingPoint.z
+
+    }
+
+    var getGroundPosition = function () {
+        const pickinfo = scene.pick(scene.pointerX, scene.pointerY, function (mesh) { return mesh == ground })
+        if (pickinfo.hit) {
+            return pickinfo.pickedPoint
+        }
+
+        return null
+    }
+
+    const pointerDown = function (mesh) {
+        currentMesh = mesh.parent
+        startingPoint = getGroundPosition()
+    }
+
+    const pointerUp = function () {
+        if (startingPoint) {
+            startingPoint = null
+            return
+        }
+    }
+
+    const pointerMove = function () {
+        if (!startingPoint) {
+            return
+        }
+        const current = getGroundPosition()
+
+        if (!current) {
+            return
+        }
+
+        const diff = current.subtract(startingPoint)
+        currentMesh.position.addInPlace(diff)
+
+        startingPoint = current
+
+    }
+
+    scene.onPointerObservable.add((pointerInfo) => {
+        let isGround
+        switch (pointerInfo.type) {
+        case BABYLON.PointerEventTypes.POINTERDOWN:
+            isGround = pointerInfo.pickInfo.pickedMesh == ground
+            if (pointerInfo.pickInfo.hit && !isGround) {
+                pointerDown(pointerInfo.pickInfo.pickedMesh)
+            } else if (isGround) {
+                createStriker()
+            }
+            break
+        case BABYLON.PointerEventTypes.POINTERUP:
+            pointerUp()
+            break
+        case BABYLON.PointerEventTypes.POINTERMOVE:
+            pointerMove()
+            break
+        }
+    })
+
+    return scene
+}

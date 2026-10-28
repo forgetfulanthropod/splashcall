@@ -1,0 +1,52 @@
+{
+    "[javascriptReact]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[javascript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[typescriptReact]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    "[typescript]": {
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+    },
+    // "editor.detectIndentation": false,
+    "editor.formatOnSave": true,
+    // "emeraldwalk.runonsave": {
+    //     "commands": [
+    //         {
+    //             "cmd": "cd ${workspaceFolder}/frontend; npx eslint --config=.eslintrc-format.json --fix ${file}",
+    //             "match": "\\.js$|\\.jsx$|\\.ts$|\\.tsx$"
+    //         }
+    //     ]
+    // },
+    // "eslint.lintTask.enable": true,
+    "eslint.workingDirectories": [
+        "frontend"
+    ],
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "files.trimTrailingWhitespace": true,
+    "git.confirmSync": false,
+    "git.postCommitCommand": "push",
+    "gitlens.hovers.enabled": false,
+    "javascript.updateImportsOnFileMove.enabled": "always",
+    "javascript.format.semicolons": "remove",
+    "remote.autoForwardPorts": false,
+    "typescript.updateImportsOnFileMove.enabled": "always",
+    "typescript.format.semicolons": "remove",
+    "workbench.colorCustomizations": {
+        "activityBar.background": "#2c2c2c",
+        "titleBar.activeBackground": "#ddd",
+        "titleBar.activeForeground": "#333"
+    },
+    "files.exclude": {
+        "**/node_modules/**": true
+    },
+    "command-runner.commands": {
+        "echo workspaceFolder": "echo ${workspaceFolder}",
+        "echo file": "echo ${file}",
+        "format file with eslint": "cd ${workspaceFolder}/frontend; npx eslint --config=.eslintrc-format.json --fix ${file}",
+    }
+}

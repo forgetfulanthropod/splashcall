@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "start": "npx peer --port 9000 --path /call --alive_timeout 5000"
+  },
+  "dependencies": {
+    "peer": "^0.6.1"
+  }
+}

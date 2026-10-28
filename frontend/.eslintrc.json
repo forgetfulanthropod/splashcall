@@ -1,0 +1,82 @@
+{
+    "env": {
+        "browser": true,
+        "es2021": true
+    },
+    "extends": [
+        "eslint:recommended",
+        "plugin:react/recommended",
+        "plugin:@typescript-eslint/recommended"
+    ],
+    "parser": "@typescript-eslint/parser",
+    "parserOptions": {
+        "ecmaFeatures": {
+            "jsx": true
+        },
+        "ecmaVersion": 12,
+        "sourceType": "module",
+        "project": "./tsconfig.json"
+    },
+    "plugins": [
+        "react",
+        "react-hooks",
+        "@typescript-eslint"
+    ],
+    "rules": {
+        // "@typescript-eslint/no-use-before-define": [ "warn", { "functions": false, "classes": false, "variables": true } ],
+        "consistent-return": "warn",
+        "react/no-unused-prop-types": "warn",
+        "react-hooks/rules-of-hooks": [
+            "error",
+            {
+                "additionalHooks": "(useOnRef|useEffectWhen|useOnRef)"
+            }
+        ],
+        "react-hooks/exhaustive-deps": [
+            "warn",
+            {
+                "additionalHooks": "(useOnRef|useEffectWhen|useOnRef)"
+            }
+        ],
+        "@typescript-eslint/ban-ts-comment": "off",
+        "@typescript-eslint/no-empty-function": "off",
+        "@typescript-eslint/explicit-module-boundary-types": "off", // disable for javascript (unsatisfiable)
+        "no-debugger": "warn",
+        "@typescript-eslint/no-unused-vars": [
+            "warn",
+            {
+                "argsIgnorePattern": "^_",
+                "varsIgnorePattern": "^_"
+            }
+        ],
+        "@typescript-eslint/strict-boolean-expressions": [
+            "warn",
+            {
+                "allowRuleToRunWithoutStrictNullChecksIKnowWhatIAmDoing": true
+            }
+        ]
+    },
+    "settings": {
+        "react": {
+            "version": "detect"
+        }
+    },
+    "overrides": [
+        {
+            "files": [
+                "*.ts",
+                "*.tsx"
+            ],
+            "rules": {
+                // enable again for typescript:
+                "@typescript-eslint/explicit-module-boundary-types": [
+                    "error"
+                ]
+            }
+        }
+    ],
+    "ignorePatterns": [
+        "esbuild.js",
+        "capacitor.config.ts"
+    ]
+}

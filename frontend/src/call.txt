@@ -1,0 +1,9 @@
+// import * as CC from "cordova-plugin-callkit-sc/www/CordovaCall.js"
+import PN from "cordova-plugin-callkit-sc/www/VoIPPushNotification"
+
+export function tryIt(): void {
+    const push = PN.init()
+
+    //@ts-ignore
+    window.push = push
+}
