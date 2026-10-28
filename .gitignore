@@ -1,4 +1,6 @@
-android
+# Only a stray root-level android folder. The Capacitor project at
+# frontend/android is part of the cloud build and is committed.
+/android
 *.pem
 *.swp
 
