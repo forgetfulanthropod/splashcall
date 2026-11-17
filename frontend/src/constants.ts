@@ -15,7 +15,8 @@ export type CardId = (
     'Snowflake' |
     'VoiceVisualizer' |
     'Tentacles' |
-    'PhotoStack'
+    'PhotoStack' |
+    'OpenWorld'
 )
 
 export const SETTINGS_VERSION = 3
@@ -111,6 +112,7 @@ export const allDefaultSettings: Record<CardId, Settings> = {
     VoiceVisualizer: { id: 'VoiceVisualizer' },
     Tentacles: defaultTentacleSettings,
     PhotoStack: { id: 'PhotoStack' },
+    OpenWorld: { id: 'OpenWorld' },
 }
 
 export type TouchAction =

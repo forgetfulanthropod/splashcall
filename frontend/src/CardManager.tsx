@@ -16,6 +16,7 @@ import ErrorBoundary from './ErrorBoundary'
 const BouncyBalls = React.lazy(() => import('./cards/BouncyBalls'))
 const FallingSand = React.lazy(() => import('./cards/falling-sand/FallingSand'))
 const VoiceVisualizer = React.lazy(() => import('./cards/VoiceVisualizer'))
+const OpenWorld = React.lazy(() => import('./cards/open-world/OpenWorld'))
 
 export const nameToCard: Record<CardId, React.FC> = {
     BouncyBalls,
@@ -30,6 +31,7 @@ export const nameToCard: Record<CardId, React.FC> = {
     PhotoStack,
     VoiceVisualizer,
     Tentacles,
+    OpenWorld,
 }
 
 export default function CardManager(): JSX.Element {
