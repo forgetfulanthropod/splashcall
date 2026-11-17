@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../context'
 import { CardId } from '../constants'
@@ -15,6 +15,9 @@ import FlatWavesPng from 'assets/cards/FlatWaves-200.png'
 import ChessPng from 'assets/cards/Chess-200.png'
 import CheckersPng from 'assets/cards/Checkers-200.png'
 import BouncyBallsPng from 'assets/cards/BouncyBalls-200.png'
+import { cardCreatorPreviewSrc } from '../cards/card-creator/preview'
+import CreatedThumb from '../cards/card-creator/CreatedThumb'
+import { removeCreatedCard, setActiveCreated, useCreatedState } from '../cards/card-creator/store'
 
 const Root = styled.div`
     // white-space: nowrap;
@@ -76,7 +79,29 @@ const CardPreview = styled.img<{ isSelected: boolean }>`
 
 export default function TextureSwitcher(): JSX.Element {
     const { settings: { id: cardId }, setSettings, allSettings } = useAppContext()
+    const created = useCreatedState()
     const [category, setCategory] = useState<Category>(undefined)
+    const [wiggling, setWiggling] = useState(false)
+    const [confirmId, setConfirmId] = useState<string | null>(null)
+
+    useEffect(() => {
+        if (!wiggling) return undefined
+        function onPointerDown(event: PointerEvent): void {
+            const target = event.target
+            if (target instanceof Element && target.closest('[data-created-card]') != null) return
+            setWiggling(false)
+            setConfirmId(null)
+        }
+        document.addEventListener('pointerdown', onPointerDown, true)
+        return function () { document.removeEventListener('pointerdown', onPointerDown, true) }
+    }, [wiggling])
+
+    useEffect(() => {
+        if (created.cards.length === 0 && wiggling) {
+            setWiggling(false)
+            setConfirmId(null)
+        }
+    }, [created.cards.length, wiggling])
 
     const CardPreviews: Record<CardId, string> = {
         Tentacles: TentaclesPng,
@@ -91,6 +116,7 @@ export default function TextureSwitcher(): JSX.Element {
         Chess: ChessPng,
         Checkers: CheckersPng,
         BouncyBalls: BouncyBallsPng,
+        CardCreator: cardCreatorPreviewSrc,
     }
 
     type Category = 'texture' | 'creator' | 'game'
@@ -107,6 +133,7 @@ export default function TextureSwitcher(): JSX.Element {
         Chess: ['game'],
         Checkers: ['game'],
         BouncyBalls: ['texture'],
+        CardCreator: ['creator'],
     }
 
     const categories: Category[] = ['texture', 'creator', 'game']
@@ -125,8 +152,44 @@ export default function TextureSwitcher(): JSX.Element {
                         id={id}
                         src={path}
                         key={id}
-                        onClick={() => setSettings(allSettings[id])}
-                        isSelected={id === cardId}
+                        onClick={() => {
+                            if (wiggling) {
+                                setWiggling(false)
+                                setConfirmId(null)
+                                return
+                            }
+                            setActiveCreated(null)
+                            setSettings(allSettings[id])
+                        }}
+                        isSelected={created.activeId == null && id === cardId}
+                    />
+                )
+            }
+            {created.cards
+                .filter(card => {
+                    if (category == null) return true
+                    if (category === 'creator') return card.kind === 'object'
+                    if (category === 'game') return card.kind === 'game'
+                    return false
+                })
+                .map((card, index) =>
+                    <CreatedThumb
+                        key={card.id}
+                        card={card}
+                        selected={card.id === created.activeId}
+                        wiggling={wiggling}
+                        confirming={confirmId === card.id}
+                        delay={index * 0.04}
+                        onOpen={() => setActiveCreated(card.id)}
+                        onLongPress={() => {
+                            setWiggling(true)
+                            setConfirmId(null)
+                        }}
+                        onArmDelete={() => setConfirmId(card.id)}
+                        onConfirmDelete={() => {
+                            removeCreatedCard(card.id)
+                            setConfirmId(null)
+                        }}
                     />
                 )
             }

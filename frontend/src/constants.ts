@@ -15,7 +15,8 @@ export type CardId = (
     'Snowflake' |
     'VoiceVisualizer' |
     'Tentacles' |
-    'PhotoStack'
+    'PhotoStack' |
+    'CardCreator'
 )
 
 export const SETTINGS_VERSION = 3
@@ -111,6 +112,8 @@ export const allDefaultSettings: Record<CardId, Settings> = {
     VoiceVisualizer: { id: 'VoiceVisualizer' },
     Tentacles: defaultTentacleSettings,
     PhotoStack: { id: 'PhotoStack' },
+    // Built-in only. Imagined objects and games are stored beside this list.
+    CardCreator: { id: 'CardCreator' },
 }
 
 export type TouchAction =

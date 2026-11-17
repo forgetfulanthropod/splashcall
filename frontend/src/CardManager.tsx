@@ -12,6 +12,9 @@ import Snowflake from './cards/Snowflake'
 import Tentacles from './cards/tentacles/Tentacles'
 import PhotoStack from './cards/PhotoStack'
 import ErrorBoundary from './ErrorBoundary'
+import CardCreator from './cards/card-creator/CardCreator'
+import CreatedCardView from './cards/card-creator/CreatedCardView'
+import { useCreatedState } from './cards/card-creator/store'
 
 const BouncyBalls = React.lazy(() => import('./cards/BouncyBalls'))
 const FallingSand = React.lazy(() => import('./cards/falling-sand/FallingSand'))
@@ -30,10 +33,16 @@ export const nameToCard: Record<CardId, React.FC> = {
     PhotoStack,
     VoiceVisualizer,
     Tentacles,
+    CardCreator,
 }
 
 export default function CardManager(): JSX.Element {
     const { reload$, settings: { id }, aspect: { screenInfo } } = useAppContext()
+    const created = useCreatedState()
+    const foundCard = created.activeId == null
+        ? undefined
+        : created.cards.find(card => card.id === created.activeId)
+    const activeCard = foundCard === undefined ? null : foundCard
     const Card = nameToCard[id]
 
     const [shown, triggerReload] = useReload()
@@ -46,7 +55,7 @@ export default function CardManager(): JSX.Element {
         {shown && screenInfo != null
             ?
             <ErrorBoundary message="Card has crashed. Change cards below ↓">
-                <Card />
+                {activeCard != null ? <CreatedCardView key={activeCard.id} card={activeCard} /> : <Card />}
             </ErrorBoundary>
             :
             <Loader />}

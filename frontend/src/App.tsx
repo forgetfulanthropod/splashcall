@@ -15,6 +15,7 @@ import { Toaster } from 'react-hot-toast'
 import ErrorBoundary from './ErrorBoundary'
 import { maybeInitialize as initializeFirebase } from './firebase'
 import WonderSync from 'connection/WonderSync'
+import CreatedCardSync from './cards/card-creator/CreatedCardSync'
 
 // const isAnotherTabOpen: boolean = initializeTabChecker()
 
@@ -40,6 +41,7 @@ export default function App(): JSX.Element {
                 <Controls />
 
                 <WonderSync />
+                <CreatedCardSync />
             </Resizer>
         </Provider>
     </div>
