@@ -1,5 +1,6 @@
 import { useClickAway } from 'ahooks'
 import React, { useEffect, useRef, useState } from 'react'
+import { useCreatedState } from '../cards/card-creator/store'
 import styled from 'styled-components'
 import { useAppContext } from '../context'
 import { noSelect } from '../css-snippets.json'
@@ -156,9 +157,20 @@ export default function Controls(): JSX.Element {
     setContentType('cards')
   }, [id])
 
-  const hasSettings =
+  const activeCreatedId = useCreatedState().activeId
+  const previousCreated = useRef(activeCreatedId)
+  useEffect(() => {
+    if (previousCreated.current !== activeCreatedId) {
+      previousCreated.current = activeCreatedId
+      setIsDrawerOpen(false)
+      setContentType('cards')
+    }
+  }, [activeCreatedId])
+
+  const hasSettings = activeCreatedId == null && (
     (settings?.drawer != null && Object.keys(settings?.drawer).length > 0)
     || settings?.sourceUrl != null
+  )
 
   return <Root {...{ isDrawerOpen }} ref={rootRef}>
     <BottomLeftButtonWrap {...{ isDrawerOpen }}>

@@ -16,7 +16,8 @@ export type CardId = (
     'VoiceVisualizer' |
     'Tentacles' |
     'PhotoStack' |
-    'OpenWorld'
+    'OpenWorld' |
+    'CardCreator'
 )
 
 export const SETTINGS_VERSION = 3
@@ -113,6 +114,8 @@ export const allDefaultSettings: Record<CardId, Settings> = {
     Tentacles: defaultTentacleSettings,
     PhotoStack: { id: 'PhotoStack' },
     OpenWorld: { id: 'OpenWorld' },
+    // Built-in only. Imagined objects and games are stored beside this list.
+    CardCreator: { id: 'CardCreator' },
 }
 
 export type TouchAction =

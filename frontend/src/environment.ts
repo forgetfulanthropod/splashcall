@@ -5,5 +5,14 @@ export const isLocal = process.env.REACT_APP_IS_LOCAL === 'yes'
 export type EnvName = 'local' | 'development' | 'production'
 export const envName: EnvName = isLocal ? 'local' : (isDev ? 'development' : 'production')
 export const backendUrl = process.env.REACT_APP_BACKEND_URL ?? 'localhost'
+
+/** Address of the card creator server, with /api/imagine. Blank means same origin (the dev proxy). */
+export function imagineApiUrl(): string {
+    const configured = process.env.REACT_APP_IMAGINE_URL
+    if (configured != null && configured.trim() !== '') {
+        return configured.trim().replace(/\/$/, '') + '/api/imagine'
+    }
+    return '/api/imagine'
+}
 export const platform = Capacitor.getPlatform() as 'web' | 'ios' | 'android'
 console.log({ isDev, isLocal, backendUrl })

@@ -80,6 +80,25 @@ You do not create a signing certificate or a provisioning profile by hand. The M
 
 The log is on the Actions run. The usual causes are: the Team ID does not match the API key’s team, the bundle id was not registered, the App Store Connect app record does not exist yet, or the API key is not Admin or App Manager. The `.p8` secret must be the whole file.
 
+## Card Creator
+
+The gooey menu has a Card Creator card. You type an idea. The app asks a small server to make either an object or a game. The phone never holds the xAI key.
+
+The peer program in `backend/` cannot grow an extra route, so the creator is a second Node process in that same folder. Run it on the machine you already use for calls, or on any host the phones can reach:
+
+```
+cd backend
+XAI_API_KEY='paste-the-key-here' node imagine-server.js
+```
+
+`XAI_API_KEY` has to be set in the environment of that process: the shell, a systemd unit, or the host's secret store. Do not put it in a file in this repository, in GitHub Actions, or in any `REACT_APP_` variable. Leave it unset and the server returns practice toys, so you can try the feature with no key. It listens on port 8787. `IMAGINE_PORT` changes the port.
+
+For a phone build, add a GitHub **variable** (not a secret) named `REACT_APP_IMAGINE_URL`. The value is the server address with no path, for example `https://signal.example.com:8787`. The app adds `/api/imagine`. An empty value is fine: the app still builds, and Card Creator shows a clear error until the address is set.
+
+On your own computer, run the imagine server, then `pnpm start` in `frontend/`. The dev site forwards `/api/imagine` to port 8787. You do not need a key for that.
+
+The server allows 8 ideas a minute from one address, and it refuses a reply that is too large. A made-up game runs in a sandboxed frame that cannot see the app, the saved toys, or the call, and it cannot open the network.
+
 ## What changed under the hood
 
 - Capacitor was updated from the 2021 release (3) to 8 so the Android app targets current Android and the iPhone app builds on Xcode 26.

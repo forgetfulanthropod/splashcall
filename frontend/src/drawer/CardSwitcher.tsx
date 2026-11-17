@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../context'
 import { CardId } from '../constants'
@@ -16,6 +16,9 @@ import ChessPng from 'assets/cards/Chess-200.png'
 import CheckersPng from 'assets/cards/Checkers-200.png'
 import BouncyBallsPng from 'assets/cards/BouncyBalls-200.png'
 import OpenWorldPng from 'assets/cards/OpenWorld-200.png'
+import { cardCreatorPreviewSrc } from '../cards/card-creator/preview'
+import CreatedThumb from '../cards/card-creator/CreatedThumb'
+import { removeCreatedCard, setActiveCreated, useCreatedState } from '../cards/card-creator/store'
 
 const Root = styled.div`
     // white-space: nowrap;
@@ -66,6 +69,20 @@ const CardPreviewsContainer = styled.div`
     background-attachment: local, local, scroll, scroll;
 `
 
+const MineLabel = styled.div`
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin: 0 2px 18px;
+    height: 26px;
+    line-height: 26px;
+    padding: 3px 12px;
+    border-radius: 1.2rem;
+    background: #e0e5ec;
+    color: #666;
+    font-size: 14px;
+    box-shadow: 0.3rem 0.3rem 0.5rem rgb(195 193 198 / 90%), -0.2rem -0.2rem 0.4rem #fff;
+`
+
 const CardPreview = styled.img<{ isSelected: boolean }>`
     margin: 8px;
     border-radius: 3px;
@@ -77,7 +94,29 @@ const CardPreview = styled.img<{ isSelected: boolean }>`
 
 export default function TextureSwitcher(): JSX.Element {
     const { settings: { id: cardId }, setSettings, allSettings } = useAppContext()
+    const created = useCreatedState()
     const [category, setCategory] = useState<Category>(undefined)
+    const [wiggling, setWiggling] = useState(false)
+    const [confirmId, setConfirmId] = useState<string | null>(null)
+
+    useEffect(() => {
+        if (!wiggling) return undefined
+        function onPointerDown(event: PointerEvent): void {
+            const target = event.target
+            if (target instanceof Element && target.closest('[data-created-card]') != null) return
+            setWiggling(false)
+            setConfirmId(null)
+        }
+        document.addEventListener('pointerdown', onPointerDown, true)
+        return function () { document.removeEventListener('pointerdown', onPointerDown, true) }
+    }, [wiggling])
+
+    useEffect(() => {
+        if (created.cards.length === 0 && wiggling) {
+            setWiggling(false)
+            setConfirmId(null)
+        }
+    }, [created.cards.length, wiggling])
 
     const CardPreviews: Record<CardId, string> = {
         Tentacles: TentaclesPng,
@@ -93,6 +132,7 @@ export default function TextureSwitcher(): JSX.Element {
         Checkers: CheckersPng,
         BouncyBalls: BouncyBallsPng,
         OpenWorld: OpenWorldPng,
+        CardCreator: cardCreatorPreviewSrc,
     }
 
     type Category = 'texture' | 'creator' | 'game'
@@ -110,11 +150,19 @@ export default function TextureSwitcher(): JSX.Element {
         Checkers: ['game'],
         BouncyBalls: ['texture'],
         OpenWorld: ['game'],
+        CardCreator: ['creator'],
     }
 
     const categories: Category[] = ['texture', 'creator', 'game']
 
     const hidden: CardId[] = ['VoiceVisualizer']
+
+    const mineCards = created.cards.filter(card => {
+        if (category == null) return true
+        if (category === 'creator') return card.kind === 'object'
+        if (category === 'game') return card.kind === 'game'
+        return false
+    })
 
     return <Root>
         <CardPreviewsContainer>
@@ -128,11 +176,40 @@ export default function TextureSwitcher(): JSX.Element {
                         id={id}
                         src={path}
                         key={id}
-                        onClick={() => setSettings(allSettings[id])}
-                        isSelected={id === cardId}
+                        onClick={() => {
+                            if (wiggling) {
+                                setWiggling(false)
+                                setConfirmId(null)
+                                return
+                            }
+                            setActiveCreated(null)
+                            setSettings(allSettings[id])
+                        }}
+                        isSelected={created.activeId == null && id === cardId}
                     />
                 )
             }
+            {mineCards.length > 0 && <MineLabel id="MineSection">Mine</MineLabel>}
+            {mineCards.map((card, index) =>
+                <CreatedThumb
+                    key={card.id}
+                    card={card}
+                    selected={card.id === created.activeId}
+                    wiggling={wiggling}
+                    confirming={confirmId === card.id}
+                    delay={index * 0.04}
+                    onOpen={() => setActiveCreated(card.id)}
+                    onLongPress={() => {
+                        setWiggling(true)
+                        setConfirmId(null)
+                    }}
+                    onArmDelete={() => setConfirmId(card.id)}
+                    onConfirmDelete={() => {
+                        removeCreatedCard(card.id)
+                        setConfirmId(null)
+                    }}
+                />
+            )}
         </CardPreviewsContainer>
         <div style={{ overflowX: 'auto', padding: '6px 0' }}>
             {categories.map(c =>

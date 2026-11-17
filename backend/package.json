@@ -1,6 +1,8 @@
 {
   "scripts": {
-    "start": "npx peer --port 9000 --path /call --alive_timeout 5000"
+    "start": "npx peer --port 9000 --path /call --alive_timeout 5000",
+    "imagine": "node imagine-server.js",
+    "test": "node --test imagine.test.js"
   },
   "dependencies": {
     "peer": "^0.6.1"
