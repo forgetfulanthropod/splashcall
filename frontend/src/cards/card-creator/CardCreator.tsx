@@ -16,7 +16,7 @@ const Root = styled.div`
 const Form = styled.form`
     box-sizing: border-box;
     min-height: 100%;
-    padding: 18vh 24px 140px;
+    padding: 12vh 24px 140px;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -24,10 +24,11 @@ const Form = styled.form`
 `
 
 const Heading = styled.h1`
-    margin: 0;
-    font-size: 28px;
-    font-weight: 700;
-    letter-spacing: -0.03em;
+    margin: 0 0 2px;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0;
+    color: #666;
 `
 
 const Input = styled.input`

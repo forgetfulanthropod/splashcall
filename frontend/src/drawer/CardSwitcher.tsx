@@ -69,6 +69,20 @@ const CardPreviewsContainer = styled.div`
     background-attachment: local, local, scroll, scroll;
 `
 
+const MineLabel = styled.div`
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin: 0 2px 18px;
+    height: 26px;
+    line-height: 26px;
+    padding: 3px 12px;
+    border-radius: 1.2rem;
+    background: #e0e5ec;
+    color: #666;
+    font-size: 14px;
+    box-shadow: 0.3rem 0.3rem 0.5rem rgb(195 193 198 / 90%), -0.2rem -0.2rem 0.4rem #fff;
+`
+
 const CardPreview = styled.img<{ isSelected: boolean }>`
     margin: 8px;
     border-radius: 3px;
@@ -143,6 +157,13 @@ export default function TextureSwitcher(): JSX.Element {
 
     const hidden: CardId[] = ['VoiceVisualizer']
 
+    const mineCards = created.cards.filter(card => {
+        if (category == null) return true
+        if (category === 'creator') return card.kind === 'object'
+        if (category === 'game') return card.kind === 'game'
+        return false
+    })
+
     return <Root>
         <CardPreviewsContainer>
             {Object.entries(CardPreviews)
@@ -168,34 +189,27 @@ export default function TextureSwitcher(): JSX.Element {
                     />
                 )
             }
-            {created.cards
-                .filter(card => {
-                    if (category == null) return true
-                    if (category === 'creator') return card.kind === 'object'
-                    if (category === 'game') return card.kind === 'game'
-                    return false
-                })
-                .map((card, index) =>
-                    <CreatedThumb
-                        key={card.id}
-                        card={card}
-                        selected={card.id === created.activeId}
-                        wiggling={wiggling}
-                        confirming={confirmId === card.id}
-                        delay={index * 0.04}
-                        onOpen={() => setActiveCreated(card.id)}
-                        onLongPress={() => {
-                            setWiggling(true)
-                            setConfirmId(null)
-                        }}
-                        onArmDelete={() => setConfirmId(card.id)}
-                        onConfirmDelete={() => {
-                            removeCreatedCard(card.id)
-                            setConfirmId(null)
-                        }}
-                    />
-                )
-            }
+            {mineCards.length > 0 && <MineLabel id="MineSection">Mine</MineLabel>}
+            {mineCards.map((card, index) =>
+                <CreatedThumb
+                    key={card.id}
+                    card={card}
+                    selected={card.id === created.activeId}
+                    wiggling={wiggling}
+                    confirming={confirmId === card.id}
+                    delay={index * 0.04}
+                    onOpen={() => setActiveCreated(card.id)}
+                    onLongPress={() => {
+                        setWiggling(true)
+                        setConfirmId(null)
+                    }}
+                    onArmDelete={() => setConfirmId(card.id)}
+                    onConfirmDelete={() => {
+                        removeCreatedCard(card.id)
+                        setConfirmId(null)
+                    }}
+                />
+            )}
         </CardPreviewsContainer>
         <div style={{ overflowX: 'auto', padding: '6px 0' }}>
             {categories.map(c =>
