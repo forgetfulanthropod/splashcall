@@ -18,6 +18,7 @@
 
 const http = require('http')
 const { MODEL, createFromIdea, createRateLimiter } = require('./imagine')
+const { MODEL: WORLD_MODEL, createWorldFromIdea } = require('../frontend/server/world')
 
 const MAX_BODY = 8 * 1024
 
@@ -71,6 +72,7 @@ function send(res, status, body, extra) {
 function createImagineServer(options) {
     const settings = options || {}
     const limiter = settings.limiter || createRateLimiter()
+    const worldLimiter = settings.worldLimiter || createRateLimiter()
     const getApiKey = settings.getApiKey || function () {
         return (process.env.XAI_API_KEY || '').trim()
     }
@@ -78,7 +80,9 @@ function createImagineServer(options) {
 
     return http.createServer(async function (req, res) {
         const url = new URL(req.url || '/', 'http://127.0.0.1')
-        if (url.pathname !== '/api/imagine') {
+        const worldRoute = url.pathname === '/api/imagine-world'
+        const cardRoute = url.pathname === '/api/imagine'
+        if (!worldRoute && !cardRoute) {
             send(res, 404, { error: 'Not found.' })
             return
         }
@@ -88,7 +92,7 @@ function createImagineServer(options) {
         }
         if (req.method === 'GET') {
             const apiKey = getApiKey()
-            send(res, 200, { ok: true, mock: apiKey.length === 0, model: MODEL })
+            send(res, 200, { ok: true, mock: apiKey.length === 0, model: worldRoute ? WORLD_MODEL : MODEL })
             return
         }
         if (req.method !== 'POST') {
@@ -114,9 +118,10 @@ function createImagineServer(options) {
             return
         }
         const idea = payload && typeof payload.idea === 'string' ? payload.idea : payload && payload.idea
-        const result = await createFromIdea(idea, {
+        const run = worldRoute ? createWorldFromIdea : createFromIdea
+        const result = await run(idea, {
             apiKey: getApiKey(),
-            limiter,
+            limiter: worldRoute ? worldLimiter : limiter,
             ip: clientIp(req),
             fetchImpl,
         })
@@ -132,7 +137,7 @@ function main() {
     server.listen(port, host, function () {
         const live = (process.env.XAI_API_KEY || '').trim().length > 0
         const mode = live ? 'live, model ' + MODEL : 'mock, XAI_API_KEY is not set'
-        console.log('Card creator on http://' + host + ':' + port + '/api/imagine (' + mode + ')')
+        console.log('Card creator on http://' + host + ':' + port + '/api/imagine and /api/imagine-world (' + mode + ')')
     })
 }
 

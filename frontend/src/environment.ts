@@ -6,13 +6,26 @@ export type EnvName = 'local' | 'development' | 'production'
 export const envName: EnvName = isLocal ? 'local' : (isDev ? 'development' : 'production')
 export const backendUrl = process.env.REACT_APP_BACKEND_URL ?? 'localhost'
 
-/** Address of the card creator server, with /api/imagine. Blank means same origin (the dev proxy). */
+/**
+ * Card Creator and Open World ask the same host.
+ * On the web that is this origin (`/api/...`), which is the Vercel functions
+ * in production and the dev proxy locally. A phone build sets
+ * REACT_APP_IMAGINE_URL to the machine running imagine-server.js.
+ */
 export function imagineApiUrl(): string {
+    return imagineEndpoint('/api/imagine')
+}
+
+export function imagineWorldApiUrl(): string {
+    return imagineEndpoint('/api/imagine-world')
+}
+
+function imagineEndpoint(path: string): string {
     const configured = process.env.REACT_APP_IMAGINE_URL
     if (configured != null && configured.trim() !== '') {
-        return configured.trim().replace(/\/$/, '') + '/api/imagine'
+        return configured.trim().replace(/\/$/, '') + path
     }
-    return '/api/imagine'
+    return path
 }
 export const platform = Capacitor.getPlatform() as 'web' | 'ios' | 'android'
 console.log({ isDev, isLocal, backendUrl })

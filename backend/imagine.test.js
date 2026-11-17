@@ -195,6 +195,19 @@ test('HTTP mock server creates a toy and hides the key', async function () {
         assert.equal(created.status, 200)
         assert.equal(body.creation.kind, 'object')
         assert.equal(JSON.stringify(body).toLowerCase().includes('xai_api_key'), false)
+
+        const world = await fetch('http://127.0.0.1:' + port + '/api/imagine-world', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idea: 'a snowy forest' }),
+        })
+        const worldBody = await world.json()
+        assert.equal(world.status, 200)
+        assert.equal(worldBody.mock, true)
+        assert.equal(worldBody.world.biome, 'snow')
+        assert.equal(worldBody.world.name, 'Frost')
+        assert.ok(worldBody.world.enemies.length >= 1)
+        assert.equal(JSON.stringify(worldBody).toLowerCase().includes('xai_api_key'), false)
     } finally {
         await close(server)
     }
