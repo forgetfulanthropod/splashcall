@@ -93,9 +93,19 @@ XAI_API_KEY='paste-the-key-here' node imagine-server.js
 
 `XAI_API_KEY` has to be set in the environment of that process: the shell, a systemd unit, or the host's secret store. Do not put it in a file in this repository, in GitHub Actions, or in any `REACT_APP_` variable. Leave it unset and the server returns practice toys, so you can try the feature with no key. It listens on port 8787. `IMAGINE_PORT` changes the port.
 
-For a phone build, add a GitHub **variable** (not a secret) named `REACT_APP_IMAGINE_URL`. The value is the server address with no path, for example `https://signal.example.com:8787`. The app adds `/api/imagine`. An empty value is fine: the app still builds, and Card Creator shows a clear error until the address is set.
+For a phone build, add a GitHub **variable** (not a secret) named `REACT_APP_IMAGINE_URL`. The value is the server address with no path, for example `https://signal.example.com:8787`. The app adds `/api/imagine` and `/api/imagine-world`. An empty value is fine: the app still builds. On the web, leave it empty so the app calls same-origin `/api/...`.
 
-On your own computer, run the imagine server, then `pnpm start` in `frontend/`. The dev site forwards `/api/imagine` to port 8787. You do not need a key for that.
+The website deploy is a Vercel project whose root directory is `frontend`. `frontend/api/imagine.js` and `frontend/api/imagine-world.js` are the serverless routes. Set `XAI_API_KEY` in the Vercel project's environment (Production and Preview). Do not put that key in GitHub Actions or in any `REACT_APP_` variable. With the key unset, both routes stay in practice mode and return a made-up toy or a built-in world.
+
+On your own computer, run the imagine server, then `pnpm start` in `frontend/`. The dev site forwards `/api/imagine` and `/api/imagine-world` to port 8787. You do not need a key for that.
+
+## Open World
+
+The Open World card can build a world from a sentence. The prompt asks xAI for colors, props, a tinted character, a weapon, and a few enemies. Attack is the red button, or the F key. Enemies chase or shoot, and a defeated player respawns in the middle.
+
+If the server is down, or no key is set, the Meadow, Dunes, and Frost chips still load. Those practice worlds are in the app.
+
+Save stores the world and where you are standing. The spec, the ground texture, and the prop positions go into an IndexedDB store named `splashcall-assets`, keyed by a hash. The same bytes are kept once. Nothing in that store is deleted automatically. The Saves list shows the total size.
 
 The server allows 8 ideas a minute from one address, and it refuses a reply that is too large. A made-up game runs in a sandboxed frame that cannot see the app, the saved toys, or the call, and it cannot open the network.
 

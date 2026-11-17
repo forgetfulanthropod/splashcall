@@ -5,7 +5,6 @@ const { exec } = require("child_process")
 const fs = require('fs')
 const path = require('path')
 const envFile = require("dotenv").config()
-const parsedEnv = envFile.parsed || {}
 
 const buildDir = "build"
 const all_keys = [
@@ -20,7 +19,11 @@ const all_keys = [
     "REACT_APP_FIRE_MESSAGING_SENDER_ID",
     "REACT_APP_FIRE_APP_ID",
     "REACT_APP_FIRE_MEASUREMENT_ID",
+    "REACT_APP_IMAGINE_URL",
 ]
+
+// .env fills gaps. A value already in the environment (CI, the shell) wins.
+const parsedEnv = collectBuildEnv(envFile.parsed || {}, process.env, all_keys)
 
 const args = process.argv.slice(2)
 const shouldWatch = args.length === 1 && args[0] === 'watch'
@@ -32,9 +35,26 @@ const iosTarget = parsedEnv.ESBUILD_IOS_TARGET
 const shouldOpenChrome = parsedEnv.ESBUILD_OPEN_CHROME === "yes"
 const envObj = {}
 all_keys.forEach(k => envObj["process.env." + k] = null)
-Object.entries(parsedEnv).forEach(([k, v]) => envObj["process.env." + k] = '"' + v + '"')
-console.log(envObj)
-main()
+Object.entries(parsedEnv).forEach(([k, v]) => envObj["process.env." + k] = JSON.stringify(String(v)))
+function collectBuildEnv(fileEnv, processEnv, keys) {
+    const merged = Object.assign({}, fileEnv || {})
+    const source = processEnv || {}
+    const wanted = new Set(keys || [])
+    Object.keys(source).forEach(function (key) {
+        if (source[key] == null) return
+        if (wanted.has(key) || key.indexOf('REACT_APP_') === 0 || key.indexOf('ESBUILD_') === 0) {
+            merged[key] = source[key]
+        }
+    })
+    return merged
+}
+
+if (require.main === module) {
+    console.log(envObj)
+    main()
+}
+
+module.exports = { all_keys, collectBuildEnv }
 
 async function main() {
     fs.rmSync(buildDir, { "recursive": true, force: true })

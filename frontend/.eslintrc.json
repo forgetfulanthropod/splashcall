@@ -68,10 +68,19 @@
                 "*.tsx"
             ],
             "rules": {
-                // enable again for typescript:
                 "@typescript-eslint/explicit-module-boundary-types": [
                     "error"
                 ]
+            }
+        },
+        {
+            "files": [
+                "src/cards/open-world/spec.js",
+                "src/cards/open-world/asset-store.js"
+            ],
+            "env": {
+                "node": true,
+                "browser": true
             }
         }
     ],

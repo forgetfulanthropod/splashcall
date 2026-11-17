@@ -8,12 +8,17 @@ const http = require('http')
 const TARGET_PORT = Number(process.env.IMAGINE_PORT || 8787)
 
 function setup(app) {
-    app.use('/api/imagine', function (req, res) {
+    app.use(function (req, res, next) {
+        const pathOnly = String(req.originalUrl || req.url || '').split('?')[0]
+        if (pathOnly !== '/api/imagine' && pathOnly !== '/api/imagine-world') {
+            next()
+            return
+        }
         const headers = Object.assign({}, req.headers, { host: '127.0.0.1:' + TARGET_PORT })
         const proxyReq = http.request({
             hostname: '127.0.0.1',
             port: TARGET_PORT,
-            path: '/api/imagine',
+            path: pathOnly,
             method: req.method,
             headers: headers,
         }, function (proxyRes) {
