@@ -10,22 +10,59 @@ import { clearDataEvent, emitDataEvent, onDataEvent } from "../../connection/dat
 import { useScene } from "../../hooks"
 import { bindTouch, SceneApi } from "../../textureUtils"
 import ToolPicker from "./ToolPicker"
+import UndoSvg from 'assets/icons/undo.svg'
+import RedoSvg from 'assets/icons/redo.svg'
+import { BUCKET_TOLERANCE, floodFill } from './floodFill'
 
 interface DoodleTouch extends Touch { metadata?: { tool: { name, color?, size?} } }
+interface HistoryState { canUndo: boolean, canRedo: boolean }
 interface DoodleApi extends SceneApi {
     setTool: (color) => void
     setCanvas: (d: string) => void
     getCanvas: () => string
+    undo: () => boolean
+    redo: () => boolean
+    historyState: () => HistoryState
+    onHistoryChange: (cb: (state: HistoryState) => void) => void
 }
 
 const CANVAS_WIDTH = 1200
+const HISTORY_LIMIT = 20
 
 const ButtonContainer = styled.div`
     position: absolute;
     bottom: 80px;
     right: 14px;
-    width: 50px;
     border: none;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+`
+
+const HistoryRow = styled.div`
+    display: flex;
+    gap: 6px;
+    margin-bottom: 3px;
+`
+
+const RoundButton = styled.button`
+    border: 1px solid lightgray;
+    box-shadow: none;
+    border-radius: 100%;
+    width: 50px;
+    height: 50px;
+    padding: 0;
+    background: #f4f4f4;
+    &::focus-visible {
+        outline: none;
+    }
+    & > img {
+        width: 32px;
+        height: 32px;
+    }
+    &:disabled > img {
+        opacity: 0.35;
+    }
 `
 
 const backgroundColor = "#f4f4f4"
@@ -45,6 +82,7 @@ export default function Doodle(): JSX.Element {
     const [rememberedColors] = useLocalStorageState('rememberedColors', ['#ffcd70'])
     const [color, setColor] = useState(rememberedColors[0])
     const [tool, setTool] = useState(tools[0])
+    const [history, setHistory] = useState<HistoryState>({ canUndo: false, canRedo: false })
 
     useEffect(() => {
         if (scene == null) return
@@ -77,6 +115,14 @@ export default function Doodle(): JSX.Element {
         emitDataEvent('Doodle-requestSync', null)
     }, [scene, callerType, isCallConnected])
 
+    useEffect(() => {
+        if (scene == null) return
+        const syncHistory = () => setHistory(scene.historyState())
+        scene.onHistoryChange(syncHistory)
+        syncHistory()
+        return () => scene.onHistoryChange(() => { })
+    }, [scene])
+
     function setToolId(id) {
         setTool(tools.find(t => t.name == id))
     }
@@ -87,6 +133,21 @@ export default function Doodle(): JSX.Element {
         tools[tools.findIndex(t => updated.name === t.name)] = updated
     }
 
+    function publishCanvas() {
+        if (!isCallConnected || scene == null) return
+        emitDataEvent('Doodle-sync', scene.getCanvas())
+    }
+
+    function handleUndo() {
+        if (scene == null || !scene.undo()) return
+        publishCanvas()
+    }
+
+    function handleRedo() {
+        if (scene == null || !scene.redo()) return
+        publishCanvas()
+    }
+
     const rootRef = useRef(null)
     const size = useSize(rootRef)
     const canvasToDisplayPixelRatio = size.width / CANVAS_WIDTH
@@ -94,6 +155,14 @@ export default function Doodle(): JSX.Element {
     return <div style={{ width: "100%", borderRadius: '12px' }} ref={rootRef}>
         <canvas ref={onRef} style={{ width: "100%" }} />
         <ButtonContainer>
+            <HistoryRow>
+                <RoundButton type="button" aria-label="Undo" title="Undo" disabled={!history.canUndo} onClick={handleUndo}>
+                    <img src={UndoSvg} alt="" />
+                </RoundButton>
+                <RoundButton type="button" aria-label="Redo" title="Redo" disabled={!history.canRedo} onClick={handleRedo}>
+                    <img src={RedoSvg} alt="" />
+                </RoundButton>
+            </HistoryRow>
             <ToolPicker {...{ canvasToDisplayPixelRatio, tool, setToolSize, setToolId, color, direction: 'left' }} />
             <ColorPicker {...{ color, setColor, direction: 'left up' }} />
         </ButtonContainer>
@@ -130,25 +199,51 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
         ctx.stroke()
     }
 
+    const undoStack: ImageData[] = []
+    const redoStack: ImageData[] = []
+    let pendingSnapshot: ImageData = null
+    let strokeChanged = false
+    let openStrokes = 0
+    let historyListener: (state: HistoryState) => void = () => { }
+
+    const historyState = function (): HistoryState {
+        return { canUndo: undoStack.length > 0, canRedo: redoStack.length > 0 }
+    }
+
+    const notifyHistory = function () {
+        historyListener(historyState())
+    }
+
+    const takeSnapshot = function () {
+        return ctx.getImageData(0, 0, canvas.width, canvas.height)
+    }
+
+    const pushUndo = function (snapshot: ImageData) {
+        undoStack.push(snapshot)
+        if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
+        redoStack.length = 0
+        notifyHistory()
+    }
+
     const fillColor = function (x, y, color) {
+        const rgb = hexToRgb(color)
+        if (rgb == null) return false
+        const px = pixelCoord(x, canvas.width)
+        const py = pixelCoord(y, canvas.height)
+        if (px < 0 || py < 0) return false
 
-        const oldRGB = ctx.getImageData(x, y, 1, 1).data
-        const newRGB = hexToRgb(color)
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-        const tolerance = 0
-
-        for (let i = 0; i < imageData.data.length; i += 4) {
-            if (Math.abs(imageData.data[i] - oldRGB[0]) <= tolerance &&
-                Math.abs(imageData.data[i + 1] - oldRGB[1]) <= tolerance &&
-                Math.abs(imageData.data[i + 2] - oldRGB[2]) <= tolerance
-            ) {
-                imageData.data[i] = newRGB[0]
-                imageData.data[i + 1] = newRGB[1]
-                imageData.data[i + 2] = newRGB[2]
-            }
-        }
-
-        ctx.putImageData(imageData, 0, 0)
+        const changed = floodFill(
+            imageData.data,
+            canvas.width,
+            canvas.height,
+            px,
+            py,
+            [rgb[0], rgb[1], rgb[2]],
+            BUCKET_TOLERANCE,
+        )
+        if (changed) ctx.putImageData(imageData, 0, 0)
+        return changed
     }
 
 
@@ -163,11 +258,30 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
 
     let touchStates = {}
     const downHandler = function (touch, tool) {
-        touchStates[touch.uid] = { lastX: touch.x, lastY: touch.y, lastIndex: 0 }
-        if (tool.name == 'brush')
-            drawCircle(touch.x, touch.y, tool.size, tool.color)
-        else if (tool.name == 'bucket')
-            fillColor(touch.x, touch.y, tool.color)
+        const isStroke = tool.name == 'brush' || tool.name == 'eraser'
+        touchStates[touch.uid] = { lastX: touch.x, lastY: touch.y, lastIndex: 0, isStroke }
+        if (isStroke) {
+            if (openStrokes === 0) {
+                pendingSnapshot = takeSnapshot()
+                strokeChanged = false
+            }
+            openStrokes += 1
+            // A brush tap leaves a dot. The eraser stays put until the pointer moves,
+            // matching the previous stroke behavior.
+            if (tool.name == 'brush') {
+                drawCircle(touch.x, touch.y, tool.size, tool.color)
+                strokeChanged = true
+            }
+        }
+        else if (tool.name == 'bucket') {
+            // A fill during someone else's stroke belongs to that open gesture.
+            if (openStrokes === 0) {
+                const before = takeSnapshot()
+                if (fillColor(touch.x, touch.y, tool.color)) pushUndo(before)
+            } else if (fillColor(touch.x, touch.y, tool.color)) {
+                strokeChanged = true
+            }
+        }
     }
 
     const moveHandler = function (touch, tool) {
@@ -180,6 +294,7 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
         const touchState = touchStates[touch.uid]
         if (touchState.lastIndex == touch.index - 1) {
             drawLine(touch.x, touch.y, touchState.lastX, touchState.lastY, tool.size, tool.color)
+            strokeChanged = true
         } else {
             console.info("Uh oh! Lost a touch between index", touchState.lastIndex, touch.index)
         }
@@ -197,7 +312,15 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
             // touchState slowly fills with junk but that should be fine.
             return
         }
+        const wasStroke = touchStates[touch.uid].isStroke
         delete touchStates[touch.uid]
+        if (!wasStroke) return
+        openStrokes = Math.max(0, openStrokes - 1)
+        if (openStrokes === 0 && pendingSnapshot != null) {
+            const snapshot = pendingSnapshot
+            pendingSnapshot = null
+            if (strokeChanged) pushUndo(snapshot)
+        }
     }
 
     bindTouch({
@@ -214,6 +337,23 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
             remoteTouchCallback(touches)
         },
         touchEndCallback: (touches) => {
+            // The last finger's touchend has an empty TouchList, so bindTouch
+            // emits one up event with no uid. Close the local strokes and tell
+            // the peer which pointers actually ended.
+            const synthetic = touches.some((t) => t.uid == null)
+            if (synthetic) {
+                const uids = Object.keys(touchStates).filter((uid) => String(uid).indexOf('other') !== 0)
+                const outgoing = uids.map((uid) => ({
+                    x: -1,
+                    y: -1,
+                    uid,
+                    type: 'up',
+                    index: touchStates[uid].lastIndex + 1,
+                }))
+                outgoing.forEach((t) => upHandler(t, myTool))
+                remoteTouchCallback(outgoing.length ? outgoing : touches)
+                return
+            }
             touches.forEach((t) => upHandler(t, myTool))
             remoteTouchCallback(touches)
         },
@@ -222,6 +362,13 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
     const setOtherTouches = function (ots: DoodleTouch[]) {
         ots.forEach(touch => {
             touch.uid = "other" + touch.uid
+            // A phone's last touchend is forwarded without an identifier.
+            if (touch.type == "up" && (touch.uid == "otherundefined" || touch.uid == "othernull")) {
+                Object.keys(touchStates)
+                    .filter((uid) => String(uid).indexOf('other') === 0)
+                    .forEach((uid) => upHandler({ ...touch, uid }, otherTool))
+                return
+            }
             if (touch.type == "down") {
 
                 otherTool = touch?.metadata?.tool ?? otherTool
@@ -243,6 +390,10 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
         remoteTouchCallback = callback
     }
 
+    const restore = function (snapshot: ImageData) {
+        ctx.putImageData(snapshot, 0, 0)
+    }
+
     return {
         stopTime() { },
         setOtherTouches,
@@ -252,13 +403,50 @@ function createScene(canvas: HTMLCanvasElement, { width: WIDTH, height: HEIGHT }
         },
         setCanvas(data) {
             const img = new Image
-            img.onload = () => ctx.drawImage(img, 0, 0)
+            img.onload = () => {
+                ctx.drawImage(img, 0, 0)
+                // A full-canvas sync (join, or the other person's undo/redo)
+                // replaces this bitmap, so local before-snapshots no longer apply.
+                undoStack.length = 0
+                redoStack.length = 0
+                pendingSnapshot = null
+                strokeChanged = false
+                notifyHistory()
+            }
             img.src = data
         },
         getCanvas() {
             return canvas.toDataURL()
-        }
+        },
+        undo() {
+            if (openStrokes > 0 || undoStack.length === 0) return false
+            redoStack.push(takeSnapshot())
+            if (redoStack.length > HISTORY_LIMIT) redoStack.shift()
+            restore(undoStack.pop())
+            notifyHistory()
+            return true
+        },
+        redo() {
+            if (openStrokes > 0 || redoStack.length === 0) return false
+            undoStack.push(takeSnapshot())
+            if (undoStack.length > HISTORY_LIMIT) undoStack.shift()
+            restore(redoStack.pop())
+            notifyHistory()
+            return true
+        },
+        historyState,
+        onHistoryChange(cb) {
+            historyListener = cb
+        },
     }
+}
+
+function pixelCoord(value, limit) {
+    if (!Number.isFinite(value)) return -1
+    const n = Math.floor(value)
+    if (n === limit) return limit - 1
+    if (n < 0 || n >= limit) return -1
+    return n
 }
 
 function hexToRgb(hex) {
