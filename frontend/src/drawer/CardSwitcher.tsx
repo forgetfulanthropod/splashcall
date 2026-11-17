@@ -15,6 +15,7 @@ import FlatWavesPng from 'assets/cards/FlatWaves-200.png'
 import ChessPng from 'assets/cards/Chess-200.png'
 import CheckersPng from 'assets/cards/Checkers-200.png'
 import BouncyBallsPng from 'assets/cards/BouncyBalls-200.png'
+import OpenWorldPng from 'assets/cards/OpenWorld-200.png'
 import { cardCreatorPreviewSrc } from '../cards/card-creator/preview'
 import CreatedThumb from '../cards/card-creator/CreatedThumb'
 import { removeCreatedCard, setActiveCreated, useCreatedState } from '../cards/card-creator/store'
@@ -116,6 +117,7 @@ export default function TextureSwitcher(): JSX.Element {
         Chess: ChessPng,
         Checkers: CheckersPng,
         BouncyBalls: BouncyBallsPng,
+        OpenWorld: OpenWorldPng,
         CardCreator: cardCreatorPreviewSrc,
     }
 
@@ -133,6 +135,7 @@ export default function TextureSwitcher(): JSX.Element {
         Chess: ['game'],
         Checkers: ['game'],
         BouncyBalls: ['texture'],
+        OpenWorld: ['game'],
         CardCreator: ['creator'],
     }
 
