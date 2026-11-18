@@ -10,48 +10,101 @@ export function accessoryBone(kind: Accessory): string {
     return kind === 'cape' ? 'spine_03' : 'Head'
 }
 
+function punchy(hex: string): THREE.Color {
+    const color = new THREE.Color(hex)
+    const lum = color.r * 0.299 + color.g * 0.587 + color.b * 0.114
+    if (lum > 0.75) color.multiplyScalar(0.48)
+    return color
+}
+
+function litMaterial(hex: string, metalness: number): THREE.MeshStandardMaterial {
+    const color = punchy(hex).convertSRGBToLinear()
+    return new THREE.MeshStandardMaterial({
+        color,
+        emissive: color.clone().multiplyScalar(0.28),
+        emissiveIntensity: 0.45,
+        roughness: 0.4,
+        metalness,
+    })
+}
+
+/**
+ * The shipped mannequin only has idle, walk, run, and jump.
+ * Weapons are a small solid mesh parented to the hand, and the swing is procedural.
+ */
 export function makeWeapon(weapon: WeaponSpec): THREE.Group {
-    const color = new THREE.Color(weapon.color).convertSRGBToLinear()
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.18 })
-    const grip = new THREE.MeshStandardMaterial({ color: new THREE.Color('#6b4a2e').convertSRGBToLinear(), roughness: 0.8 })
+    const mat = litMaterial(weapon.color, 0.35)
+    const grip = litMaterial('#6b4a2e', 0.05)
     const group = new THREE.Group()
+    group.name = 'weapon'
     if (weapon.type === 'staff') {
-        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 1.15, 8), grip)
-        shaft.position.y = 0.45
-        const orb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), mat)
-        orb.position.y = 1.08
+        const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.85, 8), grip)
+        shaft.rotation.x = Math.PI / 2
+        shaft.position.z = 0.4
+        const orb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), mat)
+        orb.position.z = 0.86
         group.add(shaft, orb)
     } else if (weapon.type === 'bow') {
-        const limb = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.025, 6, 14, Math.PI), grip)
-        limb.rotation.z = Math.PI
-        limb.position.y = 0.5
-        const string = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.66, 0.012), mat)
-        string.position.y = 0.5
-        group.add(limb, string)
+        const wood = litMaterial('#8a5a32', 0.08)
+        const limb = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.045, 8, 18, Math.PI), wood)
+        limb.position.set(0, -0.02, 0.05)
+        const string = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.42, 6), litMaterial('#f7f4ee', 0.05))
+        string.position.set(0.02, -0.02, 0.05)
+        const nock = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), mat)
+        nock.position.set(0, 0.16, 0.05)
+        group.add(limb, string, nock)
     } else if (weapon.type === 'blaster') {
-        const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.38), mat)
-        body.position.set(0, 0.2, 0.1)
-        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.28, 8), mat)
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.26), mat)
+        body.position.set(0, 0, 0.16)
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.2, 8), mat)
         barrel.rotation.x = Math.PI / 2
-        barrel.position.set(0, 0.2, 0.36)
+        barrel.position.set(0, 0, 0.36)
         group.add(body, barrel)
     } else {
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.62, 0.028), mat)
-        blade.position.y = 0.5
-        const handle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.06), grip)
-        handle.position.y = 0.1
-        const guard = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.035, 0.05), mat)
-        guard.position.y = 0.22
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.04, 0.5), mat)
+        blade.position.z = 0.36
+        const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.03, 0.14, 6), grip)
+        handle.rotation.x = Math.PI / 2
+        handle.position.z = 0.06
+        const guard = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.035, 0.04), mat)
+        guard.position.z = 0.14
         group.add(blade, handle, guard)
     }
     group.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (mesh.isMesh !== true) return
-        mesh.castShadow = true
+        mesh.castShadow = false
         mesh.frustumCulled = false
     })
-    group.name = 'weapon'
     return group
+}
+
+/**
+ * The idle hand's local +Y points down the dangling arm, so a mesh built along +Y
+ * ends up in the ground. Local +Z points forward. Tip the mesh so +Y becomes +Z.
+ */
+export function placeWeaponInHand(weapon: THREE.Group): void {
+    weapon.position.set(0, 0.02, 0.04)
+    weapon.rotation.set(0, 0, 0)
+    weapon.scale.setScalar(1)
+}
+
+export function makeSlash(color: string): THREE.Mesh {
+    const geo = new THREE.TorusGeometry(0.85, 0.035, 4, 14, Math.PI * 0.7)
+    const mat = new THREE.MeshBasicMaterial({
+        color: punchy(color).convertSRGBToLinear(),
+        transparent: true,
+        opacity: 0.88,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.name = 'slash'
+    mesh.visible = false
+    mesh.frustumCulled = false
+    mesh.position.set(0.15, 1.05, 0.35)
+    mesh.rotation.x = Math.PI / 2.4
+    return mesh
 }
 
 export function makeAccessory(kind: Accessory, tint: string): THREE.Group | null {
@@ -68,8 +121,8 @@ export function makeAccessory(kind: Accessory, tint: string): THREE.Group | null
         group.position.y = 0.18
         group.add(brim, crown)
     } else if (kind === 'cape') {
-        const cape = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.62), mat)
-        cape.position.set(0, 0.05, -0.16)
+        const cape = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.36, 0.03), mat)
+        cape.position.set(0, -0.02, -0.12)
         group.add(cape)
     } else if (kind === 'horns') {
         const hornMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#f4efe4').convertSRGBToLinear(), roughness: 0.4 })
@@ -125,11 +178,11 @@ export function makeCreature(tint: string): THREE.Group {
 export function makeHealthBar(): { group: THREE.Group, fill: THREE.Mesh } {
     const group = new THREE.Group()
     const bg = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.84, 0.1),
+        new THREE.PlaneGeometry(1.15, 0.14),
         new THREE.MeshBasicMaterial({ color: 0x1b1b1b, depthTest: false })
     )
     const fill = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.84, 0.1),
+        new THREE.PlaneGeometry(1.15, 0.14),
         new THREE.MeshBasicMaterial({ color: 0x3ddc6a, depthTest: false })
     )
     bg.renderOrder = 2
@@ -141,8 +194,11 @@ export function makeHealthBar(): { group: THREE.Group, fill: THREE.Mesh } {
 }
 
 export function makeBolt(color: string, radius: number): THREE.Mesh {
-    const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).convertSRGBToLinear() })
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 8, 6), mat)
+    const size = Math.max(0.16, radius)
+    const geo = new THREE.ConeGeometry(size, size * 3.1, 7)
+    geo.rotateX(Math.PI / 2)
+    const mat = new THREE.MeshBasicMaterial({ color: punchy(color).convertSRGBToLinear() })
+    const mesh = new THREE.Mesh(geo, mat)
     mesh.frustumCulled = false
     return mesh
 }

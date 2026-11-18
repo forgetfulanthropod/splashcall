@@ -9,7 +9,9 @@ import {
     makeBolt,
     makeCreature,
     makeHealthBar,
+    makeSlash,
     makeWeapon,
+    placeWeaponInHand,
     setFlash,
     standOnGround,
 } from './actors'
@@ -178,7 +180,10 @@ export function mountWorld(
     let statusHealth = -1
     let respawnPulse = false
     const weaponPivot = makeWeapon(spec.weapon)
-    weaponPivot.position.set(0.34, 0.92, 0.22)
+    placeWeaponInHand(weaponPivot)
+    const slash = makeSlash('#ffcc33')
+    let playerFlashed = false
+    let swingArmed = false
     let vy = 0
     let grounded = true
     let coyote = 0
@@ -193,7 +198,7 @@ export function mountWorld(
 
     const localRoot = new THREE.Group()
     localRoot.scale.setScalar(spec.player.scale)
-    localRoot.add(weaponPivot)
+    localRoot.add(slash)
     scene.add(localRoot)
     let localMixer: THREE.AnimationMixer = null
     let localClips: ClipSet = null
@@ -241,6 +246,8 @@ export function mountWorld(
             const bone = findBone(built.root, accessoryBone(spec.player.accessory))
             ;(bone == null ? built.root : bone).add(accessory)
         }
+        const hand = findBone(built.root, 'hand_r')
+        ;(hand == null ? localRoot : hand).add(weaponPivot)
         const remote = adoptCharacter(SkeletonUtils.clone(characterTemplate.scene), characterTemplate.animations, { main: '#3c7de0', joint: '#f2d56a' })
         remoteRoot.add(remote.root)
         remoteMixer = remote.mixer
@@ -251,6 +258,7 @@ export function mountWorld(
     }, undefined, (err) => {
         console.error('Open World character failed to load', err)
         localRoot.add(makeFallback())
+        localRoot.add(weaponPivot)
         finishLoad()
     })
 
@@ -494,19 +502,35 @@ export function mountWorld(
     function stepCombat(dt: number): void {
         hurtWait = Math.max(0, hurtWait - dt)
         attackWait = Math.max(0, attackWait - dt)
-        swing = Math.max(0, swing - dt / 0.22)
-        const swingAngle = Math.sin((1 - swing) * Math.PI) * (rangedWeapon ? 0.25 : 1.35)
-        weaponPivot.rotation.z = -swingAngle
-        setFlash(localRoot, hurtWait > 0 ? 1 : 0)
+        swing = Math.max(0, swing - dt / (rangedWeapon ? 0.28 : 0.38))
+        const swingAngle = Math.sin((1 - swing) * Math.PI)
+        const sweep = rangedWeapon ? 0.45 : 1.15
+        weaponPivot.rotation.x = -swingAngle * sweep
+        weaponPivot.rotation.y = swingAngle * (rangedWeapon ? 0.25 : 0.15)
+        slash.visible = swing > 0.04
+        slash.rotation.z = -0.4 + swingAngle * (rangedWeapon ? 0.4 : 1.7)
+        const slashMat = slash.material as THREE.MeshBasicMaterial
+        slashMat.opacity = 0.25 + swingAngle * 0.7
+        const flashed = hurtWait > 0
+        if (flashed !== playerFlashed) {
+            playerFlashed = flashed
+            setFlash(localRoot, flashed ? 1 : 0)
+        }
 
         if (input.attack && attackWait <= 0 && health > 0) {
             input.attack = false
-            attackWait = rangedWeapon ? (spec.weapon.type === 'blaster' ? 0.28 : 0.5) : (spec.weapon.type === 'staff' ? 0.62 : 0.42)
+            attackWait = rangedWeapon ? (spec.weapon.type === 'blaster' ? 0.34 : 0.55) : (spec.weapon.type === 'staff' ? 0.62 : 0.46)
             swing = 1
-            if (rangedWeapon) fireBolt('player', pos.x, pos.z, facing, spec.weapon.damage, 16, spec.weapon.range / 16 + 0.05, spec.weapon.color, 0.12)
-            else melee()
+            swingArmed = !rangedWeapon
+            if (rangedWeapon) {
+                fireBolt('player', pos.x, pos.z, facing, spec.weapon.damage, 8, spec.weapon.range / 8 + 0.2, '#ffcc33', 0.26)
+            }
         } else if (input.attack) {
             input.attack = false
+        }
+        if (swingArmed && swing < 0.72) {
+            swingArmed = false
+            melee()
         }
 
         for (let i = 0; i < enemies.length; i++) stepEnemy(enemies[i], dt, i)
@@ -517,15 +541,16 @@ export function mountWorld(
     function melee(): void {
         const fx = Math.sin(facing)
         const fz = Math.cos(facing)
+        const reach = Math.max(2.6, spec.weapon.range + 0.45)
         for (let i = 0; i < enemies.length; i++) {
             const enemy = enemies[i]
-            if (!enemy.alive) continue
+            if (!enemy.alive || enemy.dying > 0) continue
             const dx = enemy.x - pos.x
             const dz = enemy.z - pos.z
             const dist = Math.hypot(dx, dz)
-            if (dist > spec.weapon.range + 0.5) continue
+            if (dist > reach) continue
             const dot = dist < 0.05 ? 1 : (dx / dist) * fx + (dz / dist) * fz
-            if (dot < 0.15) continue
+            if (dot < 0.2) continue
             hurtEnemy(enemy, spec.weapon.damage)
         }
     }
@@ -541,6 +566,7 @@ export function mountWorld(
         color: string,
         radius: number
     ): void {
+        if (projectiles.length > 14) return
         const mesh = makeBolt(color, radius)
         scene.add(mesh)
         const ox = x + Math.sin(yaw) * 0.55
@@ -560,6 +586,22 @@ export function mountWorld(
 
     function stepEnemy(enemy: Enemy, dt: number, index: number): void {
         if (!enemy.alive) {
+            if (enemy.dying > 0) {
+                enemy.dying -= dt
+                const fall = 1 - Math.max(0, enemy.dying / 0.7)
+                enemy.root.visible = true
+                enemy.root.rotation.x = fall * 1.35
+                enemy.root.position.y = heightAt(enemy.x, enemy.z) - fall * 0.45
+                enemy.bar.visible = fall < 0.8
+                paintBar(enemy, 0)
+                if (enemy.dying <= 0) {
+                    enemy.root.visible = false
+                    enemy.bar.visible = false
+                    enemy.root.rotation.x = 0
+                    enemy.respawn = 5.5
+                }
+                return
+            }
             enemy.respawn -= dt
             enemy.root.visible = false
             enemy.bar.visible = false
@@ -569,25 +611,34 @@ export function mountWorld(
         const dx = pos.x - enemy.x
         const dz = pos.z - enemy.z
         const dist = Math.hypot(dx, dz)
+        const personal = 1.9
         enemy.goalT -= dt
+        enemy.attackWait -= dt
+        enemy.windup = Math.max(0, enemy.windup - dt)
         let wishX = 0
         let wishZ = 0
+        let wantsAttack = false
         if (enemy.behavior === 'chase' && dist < 14) {
-            wishX = dx
-            wishZ = dz
-        } else if (enemy.behavior === 'ranged') {
-            if (dist > 8.5) {
+            if (dist > personal + 0.25) {
                 wishX = dx
                 wishZ = dz
-            } else if (dist < 4.2) {
+            } else {
+                wantsAttack = true
+            }
+        } else if (enemy.behavior === 'ranged') {
+            if (dist > 8.2) {
+                wishX = dx
+                wishZ = dz
+            } else if (dist < 4.4) {
                 wishX = -dx
                 wishZ = -dz
             }
-            enemy.attackWait -= dt
-            if (dist < 12 && dist > 3.2 && enemy.attackWait <= 0) {
+            if (dist < 12 && dist > 3.4 && enemy.attackWait <= 0) {
                 const aim = Math.atan2(dx, dz)
-                fireBolt('enemy', enemy.x, enemy.z, aim, enemy.damage, 8, 1.5, enemy.tint, 0.16)
-                enemy.attackWait = 1.7
+                enemy.yaw = aim
+                enemy.windup = 0.35
+                fireBolt('enemy', enemy.x, enemy.z, aim, enemy.damage, 6.5, 1.8, '#ff7a1a', 0.26)
+                enemy.attackWait = 1.6
             }
         } else {
             if (enemy.goalT <= 0) {
@@ -599,35 +650,45 @@ export function mountWorld(
             }
             wishX = enemy.goalX - enemy.x
             wishZ = enemy.goalZ - enemy.z
+            if (dist < personal + 0.35) wantsAttack = true
         }
         const wishLen = Math.hypot(wishX, wishZ)
         let moving = false
         if (wishLen > 0.35) {
             const stepX = wishX / wishLen * enemy.speed * dt
             const stepZ = wishZ / wishLen * enemy.speed * dt
-            if (enemyCanStand(enemy.x + stepX, enemy.z + stepZ)) {
-                enemy.x += stepX
-                enemy.z += stepZ
+            const nextX = enemy.x + stepX
+            const nextZ = enemy.z + stepZ
+            if (enemyCanStand(nextX, nextZ) && Math.hypot(nextX - pos.x, nextZ - pos.z) >= personal) {
+                enemy.x = nextX
+                enemy.z = nextZ
                 moving = true
             } else {
                 enemy.goalT = 0
             }
             enemy.yaw = Math.atan2(wishX, wishZ)
         }
-        separateEnemy(enemy)
-        if (enemy.behavior !== 'ranged' && dist < 0.9 + enemy.scale * 0.28) {
-            enemy.attackWait -= dt
-            if (enemy.attackWait <= 0) {
-                damagePlayer(enemy.damage, enemy.x, enemy.z)
-                enemy.attackWait = 0.95
-            }
+        if (wantsAttack && enemy.attackWait <= 0) {
+            enemy.windup = 0.42
+            enemy.attackWait = 1.05
+            damagePlayer(enemy.damage, enemy.x, enemy.z)
         }
+        separateEnemy(enemy)
         enemy.flash = Math.max(0, enemy.flash - dt)
-        setFlash(enemy.root, enemy.flash > 0 ? 1 : 0)
+        const showFlash = enemy.flash > 0
+        if (showFlash !== enemy.flashed) {
+            enemy.flashed = showFlash
+            setFlash(enemy.root, showFlash ? 1 : 0)
+        }
         const y = heightAt(enemy.x, enemy.z)
         const bob = enemy.model === 'procedural' ? Math.sin(clock.elapsedTime * 3 + index) * 0.06 : 0
-        enemy.root.position.set(enemy.x, y + bob, enemy.z)
-        enemy.root.rotation.y = enemy.yaw
+        const lunge = enemy.windup > 0 ? Math.sin((0.42 - enemy.windup) / 0.42 * Math.PI) * 0.12 : 0
+        enemy.root.position.set(
+            enemy.x + Math.sin(enemy.yaw) * lunge,
+            y + bob,
+            enemy.z + Math.cos(enemy.yaw) * lunge
+        )
+        enemy.root.rotation.set(0, enemy.yaw, 0)
         enemy.root.visible = true
         if (enemy.idle != null && enemy.walk != null && enemy.wasMoving !== moving) {
             const next = moving ? enemy.walk : enemy.idle
@@ -637,31 +698,46 @@ export function mountWorld(
             enemy.wasMoving = moving
         }
         enemy.mixer?.update(dt)
-        const barY = y + 1.45 * enemy.scale + 0.35
+        if (enemy.weapon != null) {
+            const chop = enemy.windup > 0 ? Math.sin((0.42 - enemy.windup) / 0.42 * Math.PI) : 0
+            enemy.weapon.rotation.x = -chop * 1.1
+            enemy.weapon.rotation.y = chop * 0.2
+        }
+        const barY = y + 1.7 * enemy.scale + 0.45
         enemy.bar.position.set(enemy.x, barY, enemy.z)
         enemy.bar.quaternion.copy(camera.quaternion)
-        enemy.bar.visible = enemy.health < enemy.maxHealth
-        const ratio = clamp(enemy.health / enemy.maxHealth, 0, 1)
-        enemy.barFill.scale.x = Math.max(0.04, ratio)
-        enemy.barFill.position.x = -(1 - ratio) * 0.42
+        enemy.bar.visible = enemy.health < enemy.maxHealth || enemy.flash > 0
+        paintBar(enemy, enemy.health / enemy.maxHealth)
+    }
+
+    function paintBar(enemy: Enemy, ratio: number): void {
+        const k = clamp(ratio, 0, 1)
+        enemy.barFill.scale.x = Math.max(0.04, k)
+        enemy.barFill.position.x = -(1 - k) * 0.575
+        const fill = enemy.barFill.material as THREE.MeshBasicMaterial
+        fill.color.setHex(k > 0.45 ? 0x3ddc6a : 0xe23d3d)
     }
 
     function separateEnemy(enemy: Enemy): void {
+        const minBody = 1.7
         for (let i = 0; i < enemies.length; i++) {
             const other = enemies[i]
             if (other === enemy || !other.alive) continue
             const dx = enemy.x - other.x
             const dz = enemy.z - other.z
             const dist = Math.hypot(dx, dz)
-            const min = 0.7 * (enemy.scale + other.scale)
-            if (dist >= min || dist < 0.0001) continue
-            const push = (min - dist) * 0.35
-            const nx = enemy.x + (dx / dist) * push
-            const nz = enemy.z + (dz / dist) * push
-            if (enemyCanStand(nx, nz)) {
-                enemy.x = nx
-                enemy.z = nz
-            }
+            if (dist >= minBody || dist < 0.0001) continue
+            const push = (minBody - dist) * 0.55
+            enemy.x += (dx / dist) * push
+            enemy.z += (dz / dist) * push
+        }
+        const dx = enemy.x - pos.x
+        const dz = enemy.z - pos.z
+        const dist = Math.hypot(dx, dz)
+        const minPlayer = 1.9
+        if (dist < minPlayer && dist > 0.0001) {
+            enemy.x = pos.x + (dx / dist) * minPlayer
+            enemy.z = pos.z + (dz / dist) * minPlayer
         }
     }
 
@@ -671,8 +747,9 @@ export function mountWorld(
             bolt.ttl -= dt
             bolt.x += bolt.vx * dt
             bolt.z += bolt.vz * dt
-            bolt.y = heightAt(bolt.x, bolt.z) + 1.05
+            bolt.y = heightAt(bolt.x, bolt.z) + 1.15
             bolt.mesh.position.set(bolt.x, bolt.y, bolt.z)
+            bolt.mesh.lookAt(bolt.x + bolt.vx, bolt.y, bolt.z + bolt.vz)
             let hit = bolt.ttl <= 0 || Math.hypot(bolt.x, bolt.z) > PLAY_RADIUS + 1
             if (!hit && bolt.team === 'player') {
                 for (let e = 0; e < enemies.length; e++) {
@@ -731,15 +808,21 @@ export function mountWorld(
     }
 
     function hurtEnemy(enemy: Enemy, amount: number): void {
-        if (!enemy.alive) return
-        enemy.health -= amount
-        enemy.flash = 0.16
+        if (!enemy.alive || enemy.dying > 0) return
+        enemy.health = Math.max(0, enemy.health - amount)
+        enemy.flash = 0.28
+        const away = Math.atan2(enemy.x - pos.x, enemy.z - pos.z)
+        const nx = enemy.x + Math.sin(away) * 0.9
+        const nz = enemy.z + Math.cos(away) * 0.9
+        if (Math.hypot(nx, nz) < PLAY_RADIUS - 0.5) {
+            enemy.x = nx
+            enemy.z = nz
+        }
         if (enemy.health > 0) return
         enemy.alive = false
         enemy.health = 0
-        enemy.respawn = 4.5
-        enemy.root.visible = false
-        enemy.bar.visible = false
+        enemy.dying = 0.7
+        enemy.windup = 0
     }
 
     function reviveEnemy(enemy: Enemy, index: number): void {
@@ -748,8 +831,12 @@ export function mountWorld(
         enemy.z = spot.z
         enemy.health = enemy.maxHealth
         enemy.alive = true
+        enemy.dying = 0
         enemy.respawn = 0
-        enemy.attackWait = 0.6
+        enemy.attackWait = 0.8
+        enemy.windup = 0
+        enemy.flash = 0
+        enemy.root.rotation.x = 0
         enemy.root.visible = true
     }
 
@@ -775,6 +862,7 @@ export function mountWorld(
                 let mixer: THREE.AnimationMixer | null = null
                 let idle: THREE.AnimationAction | null = null
                 let walk: THREE.AnimationAction | null = null
+                let enemyWeapon: THREE.Group | null = null
                 if (kind.model === 'character' && characterTemplate != null) {
                     const built = adoptCharacter(
                         SkeletonUtils.clone(characterTemplate.scene),
@@ -786,6 +874,11 @@ export function mountWorld(
                     idle = built.clips.idle
                     walk = built.clips.walk
                     idle.play()
+                    const fist = findBone(built.root, 'hand_r')
+                    const club = makeWeapon({ type: 'sword', damage: kind.damage, range: 2, color: kind.tint })
+                    placeWeaponInHand(club)
+                    ;(fist == null ? root : fist).add(club)
+                    enemyWeapon = club
                 } else if (kind.model === 'rock' && rockTemplate != null) {
                     const rock = rockTemplate.clone(true)
                     standOnGround(rock, 1.15)
@@ -814,7 +907,11 @@ export function mountWorld(
                     goalZ: spot.z,
                     goalT: 0.4,
                     attackWait: 0.8,
+                    windup: 0,
+                    dying: 0,
                     flash: 0,
+                    flashed: false,
+                    weapon: enemyWeapon,
                     root,
                     mixer,
                     idle,
@@ -891,7 +988,11 @@ type Enemy = {
     goalZ: number
     goalT: number
     attackWait: number
+    windup: number
+    dying: number
     flash: number
+    flashed: boolean
+    weapon: THREE.Group | null
     root: THREE.Group
     mixer: THREE.AnimationMixer | null
     idle: THREE.AnimationAction | null
