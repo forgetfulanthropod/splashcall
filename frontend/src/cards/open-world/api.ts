@@ -1,10 +1,12 @@
 import { imagineWorldApiUrl } from '../../environment'
+import { acceptArt, WorldArt } from './paint'
 import { practiceWorldFor, sanitizeWorld, WorldSpec } from './spec'
 
 export type ImagineWorldResult = {
     world: WorldSpec
     mock: boolean
     offline: boolean
+    art: WorldArt | null
 }
 
 function messageFrom(status: number, data: unknown): string {
@@ -31,10 +33,10 @@ export async function imagineWorld(idea: string): Promise<ImagineWorldResult> {
             cache: 'no-store',
         })
     } catch (err) {
-        return { world: practiceWorldFor(idea), mock: true, offline: true }
+        return { world: practiceWorldFor(idea), mock: true, offline: true, art: null }
     }
     if (response.status === 404) {
-        return { world: practiceWorldFor(idea), mock: true, offline: true }
+        return { world: practiceWorldFor(idea), mock: true, offline: true, art: null }
     }
     let data: unknown = null
     try {
@@ -47,10 +49,13 @@ export async function imagineWorld(idea: string): Promise<ImagineWorldResult> {
         ? (data as { world: unknown, mock?: unknown }).world
         : null
     if (raw == null) {
-        return { world: practiceWorldFor(idea), mock: true, offline: true }
+        return { world: practiceWorldFor(idea), mock: true, offline: true, art: null }
     }
     const mock = data != null && typeof data === 'object' && 'mock' in data
         ? Boolean((data as { mock?: unknown }).mock)
         : false
-    return { world: sanitizeWorld(raw), mock, offline: false }
+    const art = data != null && typeof data === 'object' && 'art' in data
+        ? acceptArt((data as { art?: unknown }).art)
+        : null
+    return { world: sanitizeWorld(raw), mock, offline: false, art }
 }

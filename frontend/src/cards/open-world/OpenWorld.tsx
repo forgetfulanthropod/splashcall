@@ -2,6 +2,7 @@ import React, { FormEvent, useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
 import { imagineWorld } from './api'
+import { imageToTexturePixels, WorldArt } from './paint'
 import { assetStoreBytes, formatBytes, listWorldSaves, loadWorldSave, rememberWorld, removeWorldSave, writeWorldSave } from './saves'
 import { Placement, practiceWorlds, WorldSpec } from './spec'
 import { mountWorld, PlayerState, Pose, WorldHandle, WorldInput, WorldStatus } from './world'
@@ -32,6 +33,7 @@ export default function OpenWorld(): JSX.Element {
         player: null,
         pixels: null,
         placements: null,
+        art: null,
         revision: 0,
     }))
     const [health, setHealth] = useState(100)
@@ -58,6 +60,7 @@ export default function OpenWorld(): JSX.Element {
             player: session.player,
             texturePixels: session.pixels,
             placements: session.placements,
+            art: session.art,
             onReady: () => {
                 if (alive) setReady(true)
             },
@@ -182,7 +185,7 @@ export default function OpenWorld(): JSX.Element {
         camPointer.current = null
     }
 
-    function showWorld(spec: WorldSpec, player: PlayerState | null, pixels: Uint8Array | null, placements: Placement[] | null): void {
+    function showWorld(spec: WorldSpec, player: PlayerState | null, pixels: Uint8Array | null, placements: Placement[] | null, art: WorldArt | null): void {
         setHealth(player == null ? 100 : player.health)
         setRespawned(false)
         setError(null)
@@ -191,13 +194,14 @@ export default function OpenWorld(): JSX.Element {
             player,
             pixels,
             placements,
+            art,
             revision: current.revision + 1,
         }))
     }
 
     function openPractice(spec: WorldSpec): void {
         setNotice('Practice world. It works with no server.')
-        showWorld(spec, null, null, null)
+        showWorld(spec, null, null, null, null)
     }
 
     async function onImagine(event: FormEvent): Promise<void> {
@@ -211,12 +215,19 @@ export default function OpenWorld(): JSX.Element {
         try {
             const result = await imagineWorld(trimmed)
             if (mine !== request.current) return
+            const pixels = result.art != null && result.art.ground
+                ? await imageToTexturePixels(result.art.ground)
+                : null
+            if (mine !== request.current) return
+            const painted = result.art != null
             setNotice(result.offline
                 ? 'Practice world. The creator is offline.'
                 : result.mock
                     ? 'Practice world. No creator key is set on the server.'
-                    : result.world.name)
-            showWorld(result.world, null, null, null)
+                    : painted
+                        ? result.world.name + ' · painted'
+                        : result.world.name)
+            showWorld(result.world, null, pixels, null, result.art)
             setIdea('')
         } catch (err) {
             if (mine !== request.current) return
@@ -266,7 +277,7 @@ export default function OpenWorld(): JSX.Element {
         try {
             const loaded = await loadWorldSave(save)
             setNotice(loaded.spec.name)
-            showWorld(loaded.spec, loaded.player, loaded.pixels, loaded.placements)
+            showWorld(loaded.spec, loaded.player, loaded.pixels, loaded.placements, null)
             setSavesOpen(false)
             setSaveError(null)
         } catch (err) {
@@ -346,6 +357,7 @@ type Session = {
     player: PlayerState | null
     pixels: Uint8Array | null
     placements: Placement[] | null
+    art: WorldArt | null
     revision: number
 }
 

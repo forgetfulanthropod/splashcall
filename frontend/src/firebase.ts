@@ -3,7 +3,6 @@ import { getAnalytics } from 'firebase/analytics'
 import { Firestore, getFirestore } from "firebase/firestore"
 import { isDev, isLocal } from 'environment'
 
-
 const options: FirebaseOptions = {
     apiKey: process.env.REACT_APP_FIRE_API_KEY,
     authDomain: process.env.REACT_APP_FIRE_AUTH_DOMAIN,
@@ -13,15 +12,6 @@ const options: FirebaseOptions = {
     appId: process.env.REACT_APP_FIRE_APP_ID,
     measurementId: process.env.REACT_APP_FIRE_MEASUREMENT_ID,
 }
-
-if (isDev) {
-    for (const [key, value] of Object.entries(options)) {
-        if (value == null) {
-            console.error(`firebase key ${key} is not defined`)
-        }
-    }
-}
-
 
 let app: FirebaseApp = null
 let db: Firestore = null

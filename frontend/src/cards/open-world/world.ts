@@ -78,6 +78,7 @@ export type MountOptions = {
     placements?: Placement[] | null
     onReady?: () => void
     onStatus?: (status: WorldStatus) => void
+    art?: { enemy?: string, weapon?: string } | null
 }
 
 export type WorldHandle = {
@@ -181,6 +182,7 @@ export function mountWorld(
     let respawnPulse = false
     const weaponPivot = makeWeapon(spec.weapon)
     placeWeaponInHand(weaponPivot)
+    if (options.art != null && options.art.weapon) dressWeapon(weaponPivot, options.art.weapon)
     const slash = makeSlash('#ffcc33')
     let playerFlashed = false
     let swingArmed = false
@@ -863,7 +865,9 @@ export function mountWorld(
                 let idle: THREE.AnimationAction | null = null
                 let walk: THREE.AnimationAction | null = null
                 let enemyWeapon: THREE.Group | null = null
-                if (kind.model === 'character' && characterTemplate != null) {
+                if (options.art != null && options.art.enemy) {
+                    root.add(makeArtSprite(options.art.enemy, 1.7, 2.15))
+                } else if (kind.model === 'character' && characterTemplate != null) {
                     const built = adoptCharacter(
                         SkeletonUtils.clone(characterTemplate.scene),
                         characterTemplate.animations,
@@ -1082,6 +1086,38 @@ function makeGround(spec: WorldSpec, pixels: Uint8Array): THREE.Mesh {
     mesh.receiveShadow = true
     mesh.name = 'ground'
     return mesh
+}
+
+function makeArtSprite(url: string, width: number, height: number): THREE.Sprite {
+    const tex = new THREE.TextureLoader().load(url)
+    tex.encoding = THREE.sRGBEncoding
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false })
+    const sprite = new THREE.Sprite(mat)
+    sprite.scale.set(width, height, 1)
+    sprite.position.y = height * 0.48
+    sprite.frustumCulled = false
+    sprite.name = 'painted-enemy'
+    return sprite
+}
+
+function dressWeapon(group: THREE.Group, url: string): void {
+    group.traverse((obj) => {
+        const mesh = obj as THREE.Mesh
+        if (mesh.isMesh === true) mesh.visible = false
+    })
+    const tex = new THREE.TextureLoader().load(url)
+    tex.encoding = THREE.sRGBEncoding
+    const mat = new THREE.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    })
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.78), mat)
+    plane.position.set(0, 0, 0.42)
+    plane.frustumCulled = false
+    plane.name = 'painted-weapon'
+    group.add(plane)
 }
 
 function textureFromPixels(pixels: Uint8Array): THREE.DataTexture {

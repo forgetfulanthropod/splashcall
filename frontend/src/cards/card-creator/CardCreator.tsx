@@ -291,7 +291,7 @@ export default function CardCreator(): JSX.Element {
                     {loading ? 'Imagining…' : 'Create'}
                 </Button>
             </Form>
-            {loading && <Status id="CardCreatorLoading">Making something from your idea…</Status>}
+            {loading && <Status id="CardCreatorLoading">Imagining it, then painting the picture…</Status>}
             {error != null && <ErrorText id="CardCreatorError" role="alert">{error}</ErrorText>}
             <GalleryHead>Yours</GalleryHead>
             {cards.length === 0
@@ -312,7 +312,6 @@ export default function CardCreator(): JSX.Element {
                                 setWiggling(true)
                                 setConfirmId(null)
                             }}
-                            onArmDelete={() => setConfirmId(card.id)}
                             onConfirmDelete={() => {
                                 removeCreatedCard(card.id)
                                 setConfirmId(null)
@@ -331,7 +330,6 @@ function GalleryCard(props: {
     confirming: boolean
     onOpen: () => void
     onLongPress: () => void
-    onArmDelete: () => void
     onConfirmDelete: () => void
 }): JSX.Element {
     const timer = useRef<number | null>(null)
@@ -396,20 +394,22 @@ function GalleryCard(props: {
         onClick={onClick}
     >
         <Thumb>
-            {props.card.kind === 'game'
-                ? <GameFace>{props.card.title}</GameFace>
-                : <div style={{ position: 'relative', width: '100%', height: '100%', background: props.card.background }}>
-                    {props.card.parts.slice(0, 8).map((part, index) => <span key={index} style={partStyle(part)} />)}
-                </div>}
-            {props.wiggling && <Badge
+            {props.card.image
+                ? <img src={props.card.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                : props.card.kind === 'game'
+                    ? <GameFace>{props.card.title}</GameFace>
+                    : <div style={{ position: 'relative', width: '100%', height: '100%', background: props.card.background }}>
+                        {props.card.parts.slice(0, 8).map((part, index) => <span key={index} style={partStyle(part)} />)}
+                    </div>}
+            <Badge
                 data-delete="yes"
                 aria-label={'Delete ' + props.card.title}
                 onClick={(event) => {
                     event.stopPropagation()
                     event.preventDefault()
-                    props.onArmDelete()
+                    props.onConfirmDelete()
                 }}
-            >×</Badge>}
+            >×</Badge>
         </Thumb>
         <Name>{props.card.title}</Name>
         <When>{formatWhen(props.card.createdAt)}</When>

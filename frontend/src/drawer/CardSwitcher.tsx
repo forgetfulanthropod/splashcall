@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../context'
 import { CardId } from '../constants'
@@ -18,7 +18,7 @@ import BouncyBallsPng from 'assets/cards/BouncyBalls-200.png'
 import OpenWorldPng from 'assets/cards/OpenWorld-200.png'
 import { cardCreatorPreviewSrc } from '../cards/card-creator/preview'
 import CreatedThumb from '../cards/card-creator/CreatedThumb'
-import { removeCreatedCard, setActiveCreated, useCreatedState } from '../cards/card-creator/store'
+import { removeCreatedCard, removeCreatedCards, setActiveCreated, peekUndo, undoLastDelete, useCreatedState } from '../cards/card-creator/store'
 
 const Root = styled.div`
     // white-space: nowrap;
@@ -78,32 +78,32 @@ const CardPreview = styled.img<{ isSelected: boolean }>`
 `
 
 
+const EmptyMine = styled.div`
+    margin: 8px;
+    min-width: 140px;
+    height: 120px;
+    box-sizing: content-box;
+    padding: 8px;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.35;
+    color: #556;
+`
+
 export default function TextureSwitcher(): JSX.Element {
     const { settings: { id: cardId }, setSettings, allSettings } = useAppContext()
     const created = useCreatedState()
     const [category, setCategory] = useState<Category>(undefined)
-    const [wiggling, setWiggling] = useState(false)
-    const [confirmId, setConfirmId] = useState<string | null>(null)
+    const [undoTick, setUndoTick] = useState(0)
+    const seen = useRef(created.cards.length)
 
     useEffect(() => {
-        if (!wiggling) return undefined
-        function onPointerDown(event: PointerEvent): void {
-            const target = event.target
-            if (target instanceof Element && target.closest('[data-created-card]') != null) return
-            setWiggling(false)
-            setConfirmId(null)
-        }
-        document.addEventListener('pointerdown', onPointerDown, true)
-        return function () { document.removeEventListener('pointerdown', onPointerDown, true) }
-    }, [wiggling])
-
-    useEffect(() => {
-        if (created.cards.length === 0 && wiggling) {
-            setWiggling(false)
-            setConfirmId(null)
-        }
-        if (created.cards.length === 0 && category === 'mine') setCategory(undefined)
-    }, [created.cards.length, wiggling, category])
+        if (created.cards.length > seen.current) setCategory('mine')
+        seen.current = created.cards.length
+    }, [created.cards.length])
 
     const CardPreviews: Record<CardId, string> = {
         Tentacles: TentaclesPng,
@@ -145,7 +145,9 @@ export default function TextureSwitcher(): JSX.Element {
     const hidden: CardId[] = ['VoiceVisualizer']
 
     const showBuiltIns = category !== 'mine'
-    const mineCards = category === 'mine' ? created.cards : []
+    const mineCards = category === 'mine' ? created.cards.slice().reverse() : []
+    const gameIds = created.cards.filter(card => card.kind === 'game').map(card => card.id)
+    const canUndo = undoTick >= 0 && peekUndo().length > 0
 
     return <Root>
         <CardPreviewsContainer>
@@ -160,11 +162,6 @@ export default function TextureSwitcher(): JSX.Element {
                         src={path}
                         key={id}
                         onClick={() => {
-                            if (wiggling) {
-                                setWiggling(false)
-                                setConfirmId(null)
-                                return
-                            }
                             setActiveCreated(null)
                             setSettings(allSettings[id])
                         }}
@@ -172,23 +169,23 @@ export default function TextureSwitcher(): JSX.Element {
                     />
                 )
             }
+            {category === 'mine' && mineCards.length === 0 &&
+                <EmptyMine>Nothing in mine yet. Create a card, then tap the red × to throw a bad one away.</EmptyMine>
+            }
             {mineCards.map((card, index) =>
                 <CreatedThumb
                     key={card.id}
                     card={card}
                     selected={card.id === created.activeId}
-                    wiggling={wiggling}
-                    confirming={confirmId === card.id}
+                    wiggling={false}
+                    confirming={false}
                     delay={index * 0.04}
                     onOpen={() => setActiveCreated(card.id)}
-                    onLongPress={() => {
-                        setWiggling(true)
-                        setConfirmId(null)
-                    }}
-                    onArmDelete={() => setConfirmId(card.id)}
+                    onLongPress={() => undefined}
+                    onArmDelete={() => undefined}
                     onConfirmDelete={() => {
                         removeCreatedCard(card.id)
-                        setConfirmId(null)
+                        setUndoTick(tick => tick + 1)
                     }}
                 />
             )}
@@ -201,12 +198,34 @@ export default function TextureSwitcher(): JSX.Element {
                     {c}s
                 </Filter>)
             }
-            {created.cards.length > 0 && <Filter
+            <Filter
                 id="MineFilter"
                 onClick={() => setCategory(prev => prev === 'mine' ? undefined : 'mine')}
                 isSelected={category === 'mine'}
             >
-                mine
+                mine{created.cards.length > 0 ? ' ' + created.cards.length : ''}
+            </Filter>
+            {category === 'mine' && gameIds.length > 0 && <Filter
+                id="ClearGames"
+                onClick={(event) => {
+                    event.stopPropagation()
+                    removeCreatedCards(gameIds)
+                    setUndoTick(tick => tick + 1)
+                }}
+                isSelected={false}
+            >
+                delete games
+            </Filter>}
+            {canUndo && <Filter
+                id="UndoDelete"
+                onClick={(event) => {
+                    event.stopPropagation()
+                    undoLastDelete()
+                    setUndoTick(tick => tick + 1)
+                }}
+                isSelected={false}
+            >
+                undo
             </Filter>}
         </div>
     </Root >

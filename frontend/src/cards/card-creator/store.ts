@@ -12,7 +12,9 @@ import { CreatedCard, Creation } from './types'
 const CARDS_KEY = 'splashcall.createdCards.v1'
 const ACTIVE_KEY = 'splashcall.activeCreated.v1'
 const MAX_CARDS = 24
-const MAX_BYTES = 1200000
+const MAX_BYTES = 2500000
+
+let undoBatch: CreatedCard[] = []
 
 export type CreatedState = {
     cards: CreatedCard[]
@@ -124,29 +126,63 @@ function fits(cards: CreatedCard[]): boolean {
     }
 }
 
-export function addCreatedCard(card: CreatedCard, opts?: { remote?: boolean }): boolean {
+export function addCreatedCard(card: CreatedCard, opts?: { remote?: boolean, keepActive?: boolean }): boolean {
     if (state.cards.some(item => item.id === card.id)) return true
     const remote = opts != null && opts.remote === true
+    const keepActive = opts != null && opts.keepActive === true
     let cards = state.cards.concat([card])
     while (cards.length > MAX_CARDS || !fits(cards)) {
         if (cards.length <= 1) return false
         cards = cards.slice(1)
     }
-    const activeId = remote ? state.activeId : card.id
-    const stillThere = activeId != null && cards.some(item => item.id === activeId)
-    state = { cards, activeId: stillThere ? activeId : null }
+    const preferred = remote || keepActive ? state.activeId : card.id
+    const stillThere = preferred != null && cards.some(item => item.id === preferred)
+    state = { cards, activeId: stillThere ? preferred : null }
     persist()
     emit()
     if (!remote) publish({ type: 'add', card })
     return true
 }
 
+export function peekUndo(): CreatedCard[] {
+    return undoBatch.slice()
+}
+
+export function undoLastDelete(): number {
+    if (undoBatch.length === 0) return 0
+    const cards = undoBatch
+    undoBatch = []
+    let restored = 0
+    for (let i = 0; i < cards.length; i++) {
+        if (addCreatedCard(cards[i], { keepActive: true })) restored += 1
+    }
+    return restored
+}
+
+export function removeCreatedCards(ids: string[], opts?: { remote?: boolean }): void {
+    const remote = opts != null && opts.remote === true
+    const wanted = new Set(ids)
+    const gone = state.cards.filter(card => wanted.has(card.id))
+    if (gone.length === 0) return
+    const cards = state.cards.filter(card => !wanted.has(card.id))
+    const activeId = state.activeId != null && wanted.has(state.activeId) ? null : state.activeId
+    state = { cards, activeId }
+    if (!remote) undoBatch = gone
+    persist()
+    emit()
+    if (!remote) {
+        for (let i = 0; i < gone.length; i++) publish({ type: 'remove', id: gone[i].id })
+    }
+}
+
 export function removeCreatedCard(id: string, opts?: { remote?: boolean }): void {
-    if (!state.cards.some(card => card.id === id)) return
+    const found = state.cards.find(card => card.id === id)
+    if (found == null) return
     const remote = opts != null && opts.remote === true
     const cards = state.cards.filter(card => card.id !== id)
     const activeId = state.activeId === id ? null : state.activeId
     state = { cards, activeId }
+    if (!remote) undoBatch = [found]
     persist()
     emit()
     if (!remote) publish({ type: 'remove', id })

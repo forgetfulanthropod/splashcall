@@ -187,7 +187,7 @@ export default function CreatedThumb(props: Props): JSX.Element {
     function onBadge(event: React.MouseEvent<HTMLButtonElement>): void {
         event.stopPropagation()
         event.preventDefault()
-        props.onArmDelete()
+        props.onConfirmDelete()
     }
 
     function onConfirm(event: React.MouseEvent<HTMLButtonElement>): void {
@@ -211,16 +211,18 @@ export default function CreatedThumb(props: Props): JSX.Element {
         onClick={onClick}
     >
         <Face>
-            {props.card.kind === 'game'
-                ? <GameFace>
-                    <GameLabel>GAME</GameLabel>
-                    <GameTitle>{props.card.title}</GameTitle>
-                </GameFace>
-                : <div style={{ position: 'relative', width: '100%', height: '100%', background: props.card.background }}>
-                    {props.card.parts.slice(0, 8).map((part, index) => <span key={index} style={miniStyle(part)} />)}
-                </div>}
+            {props.card.image
+                ? <img src={props.card.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                : props.card.kind === 'game'
+                    ? <GameFace>
+                        <GameLabel>GAME</GameLabel>
+                        <GameTitle>{props.card.title}</GameTitle>
+                    </GameFace>
+                    : <div style={{ position: 'relative', width: '100%', height: '100%', background: props.card.background }}>
+                        {props.card.parts.slice(0, 8).map((part, index) => <span key={index} style={miniStyle(part)} />)}
+                    </div>}
         </Face>
-        {props.wiggling && <Badge type="button" data-delete="yes" aria-label={'Delete ' + props.card.title} onClick={onBadge}>×</Badge>}
+        <Badge type="button" data-delete="yes" aria-label={'Delete ' + props.card.title} onClick={onBadge}>×</Badge>
         {props.confirming && <Confirm data-delete="yes">
             <span>Delete?</span>
             <ConfirmButton type="button" data-delete="yes" onClick={onConfirm}>Delete</ConfirmButton>

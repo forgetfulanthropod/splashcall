@@ -4,6 +4,7 @@
  */
 
 const { MAX_IDEA_CHARS, completeStructured, createRateLimiter } = require('./imagine')
+const { generateWorldArt } = require('./spacexsi')
 const {
     buildWorldChatRequest,
     practiceWorldFor,
@@ -41,7 +42,15 @@ async function createWorldFromIdea(idea, options) {
             ? await completeStructured(buildWorldChatRequest(trimmed), apiKey, settings.fetchImpl)
             : practiceWorldFor(trimmed)
         const world = sanitizeWorld(raw)
-        return { status: 200, body: { world, mock: apiKey.length === 0, model: MODEL } }
+        let art = null
+        if (apiKey) {
+            try {
+                art = await generateWorldArt(trimmed, world, apiKey, settings.fetchImpl)
+            } catch (err) {
+                art = null
+            }
+        }
+        return { status: 200, body: { world, art, mock: apiKey.length === 0, model: MODEL } }
     } catch (err) {
         const status = err && err.status ? err.status : 502
         const message = err && err.publicMessage

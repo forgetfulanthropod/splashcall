@@ -93,6 +93,8 @@ const SYSTEM_PROMPT = [
     'Stay inside the page. Do not ask for secrets, passwords, or anything off the phone.',
 ].join(' ')
 
+const { generateCardArt } = require('./spacexsi')
+
 const NAMED_COLORS = {
     red: '#e23d3d',
     blue: '#3a78e0',
@@ -566,6 +568,14 @@ async function createFromIdea(idea, options) {
             ? await callModel(trimmed, apiKey, settings.fetchImpl)
             : mockCreation(trimmed)
         const creation = sanitizeCreation(raw)
+        if (apiKey) {
+            try {
+                const image = await generateCardArt(trimmed, creation.title, apiKey, settings.fetchImpl)
+                if (typeof image === 'string' && image.indexOf('data:image/') === 0) creation.image = image
+            } catch (err) {
+                // The toy still ships if painting fails.
+            }
+        }
         return { status: 200, body: { creation, mock: apiKey.length === 0, model: MODEL } }
     } catch (err) {
         const status = err && err.status ? err.status : 502

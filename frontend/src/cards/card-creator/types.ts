@@ -19,6 +19,8 @@ export type Creation = {
     background: string
     parts: ObjectPart[]
     gameHtml: string
+    /** Painted picture from SpaceXSI, or an empty string when painting was skipped. */
+    image: string
 }
 
 export type CreatedCard = Creation & {

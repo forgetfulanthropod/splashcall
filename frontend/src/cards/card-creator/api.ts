@@ -1,5 +1,6 @@
 import { imagineApiUrl } from '../../environment'
 import { acceptCreation } from './sandbox'
+import { shrinkDataUrl } from './image'
 import { Creation } from './types'
 
 function messageFrom(status: number, data: unknown): string {
@@ -36,12 +37,19 @@ export async function imagine(idea: string): Promise<Creation> {
         data = null
     }
     if (!response.ok) throw new Error(messageFrom(response.status, data))
-    const creation = data != null && typeof data === 'object' && 'creation' in data
-        ? (data as { creation: unknown }).creation
+    const record = data != null && typeof data === 'object' ? data as { creation?: unknown } : null
+    const raw = record != null && record.creation != null && typeof record.creation === 'object'
+        ? record.creation as { image?: unknown }
         : null
-    const accepted = acceptCreation(creation)
+    const painted = raw != null && typeof raw.image === 'string' ? raw.image : ''
+    if (raw != null) delete raw.image
+    const accepted = acceptCreation(raw)
     if (accepted == null) {
         throw new Error('That idea came back in a shape I could not draw. Try another.')
+    }
+    if (painted.indexOf('data:image/') === 0) {
+        const small = await shrinkDataUrl(painted)
+        if (small.length > 0 && small.length < 180000) accepted.image = small
     }
     return accepted
 }

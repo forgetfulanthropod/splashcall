@@ -131,6 +131,15 @@ function acceptParts(value: unknown): ObjectPart[] | null {
     return parts
 }
 
+function acceptImage(value: unknown): string {
+    if (typeof value !== 'string') return ''
+    if (value.length < 32 || value.length > 220000) return ''
+    if (value.indexOf('data:image/jpeg;base64,') === 0) return value
+    if (value.indexOf('data:image/png;base64,') === 0) return value
+    if (value.indexOf('data:image/webp;base64,') === 0) return value
+    return ''
+}
+
 export function acceptCreation(input: unknown): Creation | null {
     if (input == null || typeof input !== 'object') return null
     const raw = input as Record<string, unknown>
@@ -143,9 +152,9 @@ export function acceptCreation(input: unknown): Creation | null {
         if (typeof raw.gameHtml !== 'string') return null
         const gameHtml = prepareGameHtml(raw.gameHtml)
         if (gameHtml == null) return null
-        return { kind, title, idle, background, parts: [], gameHtml }
+        return { kind, title, idle, background, parts: [], gameHtml, image: acceptImage(raw.image) }
     }
     const parts = acceptParts(raw.parts)
     if (parts == null || parts.length === 0) return null
-    return { kind, title, idle, background, parts, gameHtml: '' }
+    return { kind, title, idle, background, parts, gameHtml: '', image: acceptImage(raw.image) }
 }

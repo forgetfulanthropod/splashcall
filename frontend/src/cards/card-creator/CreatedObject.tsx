@@ -242,7 +242,9 @@ export default function CreatedObject({ card }: { card: CreatedCard }): JSX.Elem
             onPointerCancel={onPointerUp}
         >
             <Idle ref={idleRef} $idle={card.idle}>
-                {card.parts.map((part, index) => <div key={index} style={partStyle(part)} />)}
+                {card.image
+                    ? <img src={card.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', pointerEvents: 'none' }} />
+                    : card.parts.map((part, index) => <div key={index} style={partStyle(part)} />)}
             </Idle>
         </Body>
     </Stage>
