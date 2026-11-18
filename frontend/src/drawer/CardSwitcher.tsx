@@ -69,20 +69,6 @@ const CardPreviewsContainer = styled.div`
     background-attachment: local, local, scroll, scroll;
 `
 
-const MineLabel = styled.div`
-    flex: 0 0 auto;
-    align-self: flex-end;
-    margin: 0 2px 18px;
-    height: 26px;
-    line-height: 26px;
-    padding: 3px 12px;
-    border-radius: 1.2rem;
-    background: #e0e5ec;
-    color: #666;
-    font-size: 14px;
-    box-shadow: 0.3rem 0.3rem 0.5rem rgb(195 193 198 / 90%), -0.2rem -0.2rem 0.4rem #fff;
-`
-
 const CardPreview = styled.img<{ isSelected: boolean }>`
     margin: 8px;
     border-radius: 3px;
@@ -116,7 +102,8 @@ export default function TextureSwitcher(): JSX.Element {
             setWiggling(false)
             setConfirmId(null)
         }
-    }, [created.cards.length, wiggling])
+        if (created.cards.length === 0 && category === 'mine') setCategory(undefined)
+    }, [created.cards.length, wiggling, category])
 
     const CardPreviews: Record<CardId, string> = {
         Tentacles: TentaclesPng,
@@ -135,7 +122,7 @@ export default function TextureSwitcher(): JSX.Element {
         CardCreator: cardCreatorPreviewSrc,
     }
 
-    type Category = 'texture' | 'creator' | 'game'
+    type Category = 'texture' | 'creator' | 'game' | 'mine'
     const TextureTags: Record<CardId, Category[]> = {
         Tentacles: ['game', 'texture'],
         FallingSand: ['game', 'texture'],
@@ -157,16 +144,12 @@ export default function TextureSwitcher(): JSX.Element {
 
     const hidden: CardId[] = ['VoiceVisualizer']
 
-    const mineCards = created.cards.filter(card => {
-        if (category == null) return true
-        if (category === 'creator') return card.kind === 'object'
-        if (category === 'game') return card.kind === 'game'
-        return false
-    })
+    const showBuiltIns = category !== 'mine'
+    const mineCards = category === 'mine' ? created.cards : []
 
     return <Root>
         <CardPreviewsContainer>
-            {Object.entries(CardPreviews)
+            {showBuiltIns && Object.entries(CardPreviews)
                 .filter(([id]) => !hidden.includes(id as CardId))
                 .filter(([id]) => category == null || TextureTags[id].includes(category))
                 .map(([id, path]) =>
@@ -189,7 +172,6 @@ export default function TextureSwitcher(): JSX.Element {
                     />
                 )
             }
-            {mineCards.length > 0 && <MineLabel id="MineSection">Mine</MineLabel>}
             {mineCards.map((card, index) =>
                 <CreatedThumb
                     key={card.id}
@@ -219,6 +201,13 @@ export default function TextureSwitcher(): JSX.Element {
                     {c}s
                 </Filter>)
             }
+            {created.cards.length > 0 && <Filter
+                id="MineFilter"
+                onClick={() => setCategory(prev => prev === 'mine' ? undefined : 'mine')}
+                isSelected={category === 'mine'}
+            >
+                mine
+            </Filter>}
         </div>
     </Root >
 }

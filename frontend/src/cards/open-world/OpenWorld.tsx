@@ -559,6 +559,10 @@ const Prompt = styled.form`
     display: flex;
     gap: 8px;
     pointer-events: auto;
+    @media (max-width: 700px) {
+        /* The connect control sits in the top-right. Keep Imagine clear of it. */
+        padding-right: calc(108px + env(safe-area-inset-right, 0px));
+    }
 `
 
 const PromptInput = styled.input`
