@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
-import { LoopEngine, TuneSettings } from './engine'
-import { keyLabel, NOTES, ScaleName } from './theory'
+import { EngineSnapshot, LoopEngine, LoopLength, TuneSettings } from './engine'
+import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
 
 const SCALES: ScaleName[] = ['Major', 'Minor', 'Dorian', 'Mixolydian', 'Pentatonic']
-const BAR_CHOICES = [2, 4, 8, 16]
+const LENGTHS: LoopLength[] = [1, 2, 4, 8, 'free']
 
 type Track = {
     id: string
@@ -17,22 +17,14 @@ type Track = {
     bypass: boolean
     volume: number
     muted: boolean
-}
-
-type Clock = {
-    bar: number
-    left: number
-    progress: number
-    playing: boolean
-    recordId: string | null
-    overdub: boolean
+    bars: LoopLength
 }
 
 const DEFAULTS: Track[] = [
-    { id: 'vocals', name: 'Vocals', root: 0, scale: 'Major', strength: 75, bypass: false, volume: 80, muted: false },
-    { id: 'harmony', name: 'Harmony', root: 0, scale: 'Major', strength: 90, bypass: false, volume: 75, muted: false },
-    { id: 'beatbox', name: 'Beatbox', root: 0, scale: 'Major', strength: 0, bypass: false, volume: 85, muted: false },
-    { id: 'bass', name: 'Bass', root: 0, scale: 'Major', strength: 55, bypass: false, volume: 80, muted: false },
+    { id: 'vocals', name: 'Vocals', root: 0, scale: 'Major', strength: 75, bypass: false, volume: 80, muted: false, bars: 4 },
+    { id: 'harmony', name: 'Harmony', root: 0, scale: 'Major', strength: 90, bypass: false, volume: 75, muted: false, bars: 2 },
+    { id: 'beatbox', name: 'Beatbox', root: 0, scale: 'Major', strength: 0, bypass: false, volume: 85, muted: false, bars: 1 },
+    { id: 'bass', name: 'Bass', root: 0, scale: 'Major', strength: 55, bypass: false, volume: 80, muted: false, bars: 8 },
 ]
 
 function tuneOf(track: Track): TuneSettings {
@@ -42,9 +34,10 @@ function tuneOf(track: Track): TuneSettings {
 export default function VoiceLooper(): JSX.Element {
     const { otherName } = useAppContext()
     const [tracks, setTracks] = useState<Track[]>(DEFAULTS)
-    const [bpm, setBpm] = useState(96)
-    const [bars, setBars] = useState(8)
-    const [clock, setClock] = useState<Clock>({ bar: 1, left: 20, progress: 0, playing: false, recordId: null, overdub: false })
+    const [bpm, setBpm] = useState(90)
+    const [metronome, setMetronome] = useState(false)
+    const [countIn, setCountIn] = useState(true)
+    const [clock, setClock] = useState<EngineSnapshot>({ playing: false, elapsed: 0, recordId: null, phase: null, overdub: false, progress: {} })
     const [audio, setAudio] = useState<Record<string, boolean>>({})
     const [sheetId, setSheetId] = useState<string | null>(null)
     const [editing, setEditing] = useState<string | null>(null)
@@ -65,7 +58,9 @@ export default function VoiceLooper(): JSX.Element {
                     flags[track.id] = current.hasAudio(track.id)
                 })
                 setAudio(flags)
-                setClock(current.position())
+                setClock(current.snapshot())
+                const message = current.error()
+                if (message.length > 0) setError(message)
             })
         }
         return engineRef.current
@@ -76,8 +71,8 @@ export default function VoiceLooper(): JSX.Element {
         let frame = 0
         let last = ''
         const tick = (): void => {
-            const pos = loop.position()
-            const key = (pos.playing ? '1' : '0') + '|' + (pos.recordId || '') + '|' + pos.bar.toFixed(1)
+            const pos = loop.snapshot()
+            const key = (pos.playing ? '1' : '0') + '|' + (pos.recordId || '') + '|' + (pos.phase || '') + '|' + pos.elapsed.toFixed(1)
             if (key !== last) {
                 last = key
                 setClock(pos)
@@ -111,6 +106,7 @@ export default function VoiceLooper(): JSX.Element {
                         bypass: Boolean(remote.bypass),
                         volume: clampPercent(remote.volume, track.volume),
                         muted: Boolean(remote.muted),
+                        bars: isLength(remote.bars) ? remote.bars : track.bars,
                     }
                 })
                 return merged.concat(extras.map(cleanRemote))
@@ -135,6 +131,7 @@ export default function VoiceLooper(): JSX.Element {
                 bypass: track.bypass,
                 volume: track.volume,
                 muted: track.muted,
+                bars: track.bars,
             })),
         })
         tracks.forEach((track) => engine().setGain(track.id, track.volume, track.muted))
@@ -146,9 +143,10 @@ export default function VoiceLooper(): JSX.Element {
     async function onPlay(): Promise<void> {
         setError(null)
         try {
+            engine().prime()
             if (clock.playing) engine().stop()
             else await engine().play()
-            setClock(engine().position())
+            setClock(engine().snapshot())
         } catch (err) {
             setError(messageFrom(err))
         }
@@ -156,15 +154,7 @@ export default function VoiceLooper(): JSX.Element {
 
     function onStop(): void {
         engine().stop()
-        setClock(engine().position())
-    }
-
-    function onBars(): void {
-        const index = BAR_CHOICES.indexOf(bars)
-        const next = BAR_CHOICES[(index + 1) % BAR_CHOICES.length]
-        engine().setTempo(bpm, next)
-        setBars(next)
-        setAudio({})
+        setClock(engine().snapshot())
     }
 
     function onBpm(value: string): void {
@@ -172,21 +162,20 @@ export default function VoiceLooper(): JSX.Element {
         if (!Number.isFinite(next)) return
         const rounded = Math.max(40, Math.min(200, Math.round(next)))
         if (rounded === bpm) return
-        engine().setTempo(rounded, bars)
+        engine().setBpm(rounded)
         setBpm(rounded)
         setAudio({})
     }
 
     async function onRecord(track: Track, overdub: boolean): Promise<void> {
         setError(null)
-        if (clock.recordId === track.id) {
-            engine().cancelRecord()
-            setClock(engine().position())
-            return
-        }
+        engine().prime()
+        engine().setCountIn(countIn)
         try {
-            await engine().record(track.id, overdub, tuneOf(track))
-            setClock(engine().position())
+            await engine().record(track.id, overdub, tuneOf(track), track.bars)
+            setClock(engine().snapshot())
+            const message = engine().error()
+            if (message.length > 0) setError(message)
         } catch (err) {
             setError(messageFrom(err))
         }
@@ -211,6 +200,7 @@ export default function VoiceLooper(): JSX.Element {
             bypass: false,
             volume: 80,
             muted: false,
+            bars: 4,
         }]))
     }
 
@@ -223,13 +213,22 @@ export default function VoiceLooper(): JSX.Element {
     return <Root>
         <Header>
             <Title>Voice Looper</Title>
-            <Subtitle>On a call with {peer} · {bars} bars · {bpm} BPM</Subtitle>
+            <Subtitle>On a call with {peer} · 4/4 · {bpm} BPM</Subtitle>
             <Transport>
                 <Round type="button" id="VoiceLooperStop" aria-label="Stop" onClick={onStop}><Square /></Round>
                 <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
                     {clock.playing ? <Pause /> : <Triangle />}
                 </Play>
-                <Pill type="button" id="VoiceLooperBars" onClick={onBars}>{bars} bars</Pill>
+                <Pill type="button" $on={metronome} onClick={() => {
+                    const next = !metronome
+                    setMetronome(next)
+                    engine().setMetronome(next)
+                }}>Click</Pill>
+                <Pill type="button" $on={countIn} onClick={() => {
+                    const next = !countIn
+                    setCountIn(next)
+                    engine().setCountIn(next)
+                }}>{countIn ? 'Count-in' : 'No count-in'}</Pill>
                 <BpmPill>
                     <BpmInput
                         id="VoiceLooperBpm"
@@ -244,11 +243,11 @@ export default function VoiceLooper(): JSX.Element {
                 </BpmPill>
             </Transport>
             <ProgressTrack>
-                <ProgressFill style={{ width: (clock.progress * 100) + '%' }} />
+                <ProgressFill style={{ width: (masterProgress(clock.elapsed, bpm) * 100) + '%' }} />
             </ProgressTrack>
             <ProgressMeta>
-                <span>Bar {clock.bar.toFixed(1)}</span>
-                <span>{clock.left.toFixed(1)}s</span>
+                <span>Beat {masterBeat(clock.elapsed, bpm)}</span>
+                <span>{masterLeft(clock.elapsed, bpm).toFixed(1)}s</span>
             </ProgressMeta>
             {error != null && <ErrorText role="alert">{error}</ErrorText>}
         </Header>
@@ -277,12 +276,29 @@ export default function VoiceLooper(): JSX.Element {
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{track.bypass ? 'off' : track.strength + '%'}</Chip>
                     </RowLine>
                     <RowLine>
+                        {LENGTHS.map((length) =>
+                            <Chip
+                                key={String(length)}
+                                type="button"
+                                $on={track.bars === length}
+                                onClick={() => {
+                                    engine().setLength(track.id, length)
+                                    patch(track.id, { bars: length })
+                                    setAudio((current) => ({ ...current, [track.id]: false }))
+                                }}
+                            >{length === 'free' ? 'Free' : length + (length === 1 ? ' bar' : ' bars')}</Chip>
+                        )}
+                    </RowLine>
+                    <TrackMeter aria-hidden="true">
+                        <TrackMeterFill style={{ width: ((clock.progress[track.id] || 0) * 100) + '%' }} />
+                    </TrackMeter>
+                    <RowLine>
                         <Tiny
                             type="button"
-                            $hot={recording && !clock.overdub}
-                            aria-label={'Record ' + track.name}
-                            onClick={() => onRecord(track, false)}
-                        >Rec</Tiny>
+                        $hot={recording && !clock.overdub}
+                        aria-label={'Record ' + track.name}
+                        onClick={() => onRecord(track, false)}
+                    >{recording && clock.phase === 'count-in' ? 'Count' : recording && track.bars === 'free' && !clock.overdub ? 'Stop' : 'Rec'}</Tiny>
                         <Tiny
                             type="button"
                             $hot={recording && clock.overdub}
@@ -345,6 +361,28 @@ export default function VoiceLooper(): JSX.Element {
     </Root>
 }
 
+function masterProgress(elapsed: number, bpm: number): number {
+    const bar = barSeconds(bpm)
+    if (!(elapsed > 0)) return 0
+    return (elapsed % bar) / bar
+}
+
+function masterBeat(elapsed: number, bpm: number): number {
+    const bar = barSeconds(bpm)
+    if (!(elapsed > 0)) return 1
+    return Math.floor((elapsed % bar) / (bar / 4)) + 1
+}
+
+function masterLeft(elapsed: number, bpm: number): number {
+    const bar = barSeconds(bpm)
+    if (!(elapsed > 0)) return bar
+    return bar - (elapsed % bar)
+}
+
+function isLength(value: LoopLength | undefined): value is LoopLength {
+    return value === 1 || value === 2 || value === 4 || value === 8 || value === 'free'
+}
+
 function messageFrom(err: unknown): string {
     if (err instanceof Error && err.message.length > 0 && err.message.length < 180) return err.message
     return 'The looper could not use the microphone.'
@@ -374,6 +412,7 @@ function cleanRemote(track: Track): Track {
         bypass: Boolean(track.bypass),
         volume: clampPercent(track.volume, 80),
         muted: Boolean(track.muted),
+        bars: isLength(track.bars) ? track.bars : 4,
     }
 }
 
@@ -432,11 +471,11 @@ const Play = styled(Round)`
     color: white;
 `
 
-const Pill = styled.button`
+const Pill = styled.button<{ $on?: boolean }>`
     border: 0;
     border-radius: 999px;
     background: #e0e5ec;
-    box-shadow: ${raised};
+    box-shadow: ${p => p.$on ? inset : raised};
     color: #243038;
     font: inherit;
     font-size: 14px;
@@ -515,8 +554,22 @@ const Row = styled.div`
 
 const RowLine = styled.div`
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+`
+
+const TrackMeter = styled.div`
+    height: 8px;
+    border-radius: 999px;
+    background: #d5dbe3;
+    box-shadow: ${inset};
+    overflow: hidden;
+`
+
+const TrackMeterFill = styled.div`
+    height: 100%;
+    background: #2f7a45;
 `
 
 const Name = styled.span`
@@ -554,9 +607,9 @@ const IconButton = styled.button`
 const Chip = styled.button<{ $on?: boolean }>`
     border: 0;
     border-radius: 999px;
-    background: #e0e5ec;
-    box-shadow: ${p => p.$on ? inset : raised};
-    color: #243038;
+    background: ${p => p.$on ? '#2f7a45' : '#e0e5ec'};
+    box-shadow: ${p => p.$on ? 'none' : raised};
+    color: ${p => p.$on ? 'white' : '#243038'};
     font: inherit;
     font-size: 13px;
     font-weight: 700;

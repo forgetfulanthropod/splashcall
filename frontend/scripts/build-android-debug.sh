@@ -20,7 +20,18 @@ fi
 
 cd android
 chmod +x ./gradlew
-./gradlew assembleDebug --no-daemon
+# Maven Central sometimes answers 429 on a fresh CI machine. Gradle does not
+# retry that status, so try the same build again after a short wait.
+attempt=1
+until ./gradlew assembleDebug --no-daemon; do
+  if [[ "$attempt" -ge 3 ]]; then
+    echo "Gradle could not download its libraries after ${attempt} tries." >&2
+    exit 1
+  fi
+  echo "Gradle could not download its libraries. Trying again." >&2
+  attempt=$((attempt + 1))
+  sleep $((attempt * 20))
+done
 
 apk="app/build/outputs/apk/debug/app-debug.apk"
 if [[ ! -f "$apk" ]]; then

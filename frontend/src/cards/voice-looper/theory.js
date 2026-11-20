@@ -54,10 +54,38 @@ function targetFrequency(freq, mask) {
     return midiToFreq(best)
 }
 
+const BEATS_PER_BAR = 4
+
+function barSeconds(bpm) {
+    const safeBpm = bpm > 0 ? bpm : 90
+    return BEATS_PER_BAR * (60 / safeBpm)
+}
+
 function loopSeconds(bpm, bars) {
-    const safeBpm = bpm > 0 ? bpm : 96
-    const safeBars = bars > 0 ? bars : 8
-    return safeBars * 4 * (60 / safeBpm)
+    const safeBars = bars > 0 ? bars : 1
+    return barSeconds(bpm) * safeBars
+}
+
+/** Where a loop of `duration` sits on the shared clock. */
+function alignedOffset(elapsed, duration) {
+    if (!(duration > 0)) return 0
+    const wrapped = elapsed % duration
+    return wrapped < 0 ? wrapped + duration : wrapped
+}
+
+/**
+ * Audio-clock time when a take should start.
+ * A count-in is one bar of clicks before that downbeat.
+ * While the master clock is running, the downbeat stays on the grid.
+ */
+function recordDownbeat(now, playing, origin, barLength, countIn) {
+    const bar = barLength > 0 ? barLength : 1
+    if (!playing) return countIn ? now + bar : now
+    const elapsed = now - origin
+    let next = origin + Math.ceil((elapsed - 1e-4) / bar) * bar
+    if (next - now < 0.04) next += bar
+    if (countIn && next - now < bar - 0.04) next += bar
+    return next
 }
 
 function loopPosition(elapsed, seconds, bars) {
@@ -81,7 +109,11 @@ module.exports = {
     noteName,
     scalePitchClasses,
     targetFrequency,
+    BEATS_PER_BAR,
+    barSeconds,
     loopSeconds,
     loopPosition,
+    alignedOffset,
+    recordDownbeat,
     keyLabel,
 }
