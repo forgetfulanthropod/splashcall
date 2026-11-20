@@ -76,7 +76,8 @@
         {
             "files": [
                 "src/cards/open-world/spec.js",
-                "src/cards/open-world/asset-store.js"
+                "src/cards/open-world/asset-store.js",
+                "src/cards/voice-looper/theory.js"
             ],
             "env": {
                 "node": true,

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../context'
-import { CardId } from '../constants'
+import { allDefaultSettings, CardId } from '../constants'
 
 import TentaclesPng from 'assets/cards/Tentacles-200.png'
 import FallingSandPng from 'assets/cards/FallingSand-200.png'
@@ -17,6 +17,7 @@ import CheckersPng from 'assets/cards/Checkers-200.png'
 import BouncyBallsPng from 'assets/cards/BouncyBalls-200.png'
 import OpenWorldPng from 'assets/cards/OpenWorld-200.png'
 import { cardCreatorPreviewSrc } from '../cards/card-creator/preview'
+import { voiceLooperPreviewSrc } from '../cards/voice-looper/preview'
 import CreatedThumb from '../cards/card-creator/CreatedThumb'
 import { removeCreatedCard, removeCreatedCards, setActiveCreated, peekUndo, undoLastDelete, useCreatedState } from '../cards/card-creator/store'
 
@@ -120,6 +121,7 @@ export default function TextureSwitcher(): JSX.Element {
         BouncyBalls: BouncyBallsPng,
         OpenWorld: OpenWorldPng,
         CardCreator: cardCreatorPreviewSrc,
+        VoiceLooper: voiceLooperPreviewSrc,
     }
 
     type Category = 'texture' | 'creator' | 'game' | 'mine'
@@ -138,6 +140,7 @@ export default function TextureSwitcher(): JSX.Element {
         BouncyBalls: ['texture'],
         OpenWorld: ['game'],
         CardCreator: ['creator'],
+        VoiceLooper: ['creator'],
     }
 
     const categories: Category[] = ['texture', 'creator', 'game']
@@ -163,7 +166,8 @@ export default function TextureSwitcher(): JSX.Element {
                         key={id}
                         onClick={() => {
                             setActiveCreated(null)
-                            setSettings(allSettings[id])
+                            const stored = allSettings[id]
+                            setSettings(stored != null ? stored : allDefaultSettings[id])
                         }}
                         isSelected={created.activeId == null && id === cardId}
                     />
