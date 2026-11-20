@@ -27,7 +27,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Lets you take a photo in photostack</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Microphone lets the other person hear you!</string>
+	<string>Microphone lets the other person hear you, and lets you record voice loops.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>App sends your photos directly to your friend</string>
 	<key>UIApplicationSceneManifest</key>
