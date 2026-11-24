@@ -1,13 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
-import styled from 'styled-components'
+import styled, { keyframes } from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
-import { imagineWandApiUrl } from '../../environment'
 import { bounce, saveBytes } from './exportMix'
 import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
 import PlaySheet, { SheetTab } from './PlaySheet'
 import { chordAt, defaultSong, defaultTrack, freshLibrary, hashSamples, Library, parseProgression, pushRevision, restoreRevision, Song, SongTrack } from './song'
-import { analyzeTake, arrangementToTracks, practiceArrangement, renderPart, wandFailureMessage } from './wand'
+import { centsBetween, estimatePitch, listenPlan, listenToVocal, localWand, renderPart } from './wand'
 import { drawWaveform, testVoice, waveformHasEnergy } from './waveform'
 import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
@@ -44,6 +43,8 @@ export default function VoiceLooper(): JSX.Element {
     const [waves, setWaves] = useState<Record<string, Float32Array>>({})
     const [results, setResults] = useState<TestLine[]>([])
     const [testing, setTesting] = useState(false)
+    const [listening, setListening] = useState(false)
+    const wandTap = useRef(0)
     const inputTrim = song.inputTrim
     const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
@@ -340,59 +341,61 @@ export default function VoiceLooper(): JSX.Element {
         })]))
     }
 
-    async function onWand(): Promise<void> {
-        const recorded = song.tracks.find((track) => !track.wand && (audio[track.id] || track.audioId !== ''))
-        if (recorded == null) {
-            setError('Record a track first. The wand builds around it.')
-            return
-        }
-        const live = engine().copySamples(recorded.id)
-        const clip = live != null ? live : recorded.audioId !== '' ? await recallAudio(recorded.audioId) : null
-        if (clip == null) {
-            setError('Record a track first. The wand builds around it.')
-            return
-        }
-        const features = analyzeTake(clip.samples, clip.rate, song.bpm)
+    function applyWand(resolved: ReturnType<typeof localWand>, label: string): void {
+        const added = resolved.tracks.filter((track) => track.wand)
+        added.forEach((track, index) => {
+            const part = resolved.arrangement.parts[index]
+            if (part == null) return
+            const rendered = renderPart(part, songRef.current.bpm, 44100)
+            engine().loadSamples(track.id, rendered, 44100)
+            setWaves((current) => ({ ...current, [track.id]: engine().peaks(track.id, 96) }))
+        })
+        const chords = parseProgression(resolved.arrangement.chords.join(' '))
+        updateActive((current) => ({
+            ...current,
+            revisions: pushRevision(current, label, Date.now()),
+            chords: chords.length > 0 ? chords : current.chords,
+            barsEach: resolved.arrangement.barsEach,
+            tracks: resolved.tracks,
+        }))
         setError(null)
-        setNote('Asking for an arrangement…')
+        setNote(resolved.note)
+    }
+
+    async function onWand(): Promise<void> {
+        if (listening) return
+        const recorded = song.tracks.find((track) => !track.wand && (audio[track.id] || track.audioId !== ''))
+        const plan = listenPlan(recorded != null)
+        if (recorded == null) engine().beginCapture()
+        setListening(true)
+        setError(null)
+        setNote('Listening…')
         try {
-            const response = await fetch(imagineWandApiUrl(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ features }),
-            })
-            const body = await response.json() as { error?: string, arrangement?: unknown, mock?: boolean }
-            if (response.status === 403 || body.error === 'Magic wand needs xAI credits') {
-                setError('Magic wand needs xAI credits')
-                setNote('')
-                return
+            let samples = new Float32Array(0)
+            let rate = engine().sampleRate()
+            if (recorded != null) {
+                const live = engine().copySamples(recorded.id)
+                const clip = live != null ? live : recorded.audioId !== '' ? await recallAudio(recorded.audioId) : null
+                if (clip != null) {
+                    samples = clip.samples
+                    rate = clip.rate
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, plan.ms))
+            } else {
+                samples = await engine().listen(plan.ms)
+                rate = engine().sampleRate()
             }
-            if (!response.ok || body.arrangement == null) {
-                setError(body.error || wandFailureMessage(response.status))
-                setNote('')
-                return
-            }
-            const built = arrangementToTracks(body.arrangement, songRef.current.tracks, Date.now())
-            const added = built.tracks.filter((track) => track.wand)
-            added.forEach((track, index) => {
-                const part = built.arrangement.parts[index]
-                if (part == null) return
-                const rendered = renderPart(part, song.bpm, 44100)
-                engine().loadSamples(track.id, rendered, 44100)
-                setWaves((current) => ({ ...current, [track.id]: engine().peaks(track.id, 96) }))
-            })
-            const chords = parseProgression(built.arrangement.chords.join(' '))
-            updateActive((current) => ({
-                ...current,
-                revisions: pushRevision(current, 'Before magic wand', Date.now()),
-                chords: chords.length > 0 ? chords : current.chords,
-                barsEach: built.arrangement.barsEach,
-                tracks: built.tracks,
-            }))
-            setNote(body.mock ? 'Practice arrangement. Your recording is unchanged.' : 'Added parts around your recording.')
+            const profile = listenToVocal(samples, rate, songRef.current.bpm)
+            profile.vocalVolume = recorded != null ? recorded.volume : 80
+            wandTap.current += 1
+            const seed = (Math.floor(performance.now()) + wandTap.current * 0x9E3779B1) >>> 0
+            const built = localWand(profile, seed, songRef.current.tracks, Date.now())
+            applyWand(built, 'Before magic wand')
         } catch (err) {
-            setError('Magic wand could not build an arrangement. Your recording is still here.')
+            setError('The wand could not listen. Your recording is still here.')
             setNote('')
+        } finally {
+            setListening(false)
         }
     }
 
@@ -500,36 +503,32 @@ export default function VoiceLooper(): JSX.Element {
                 pass: looped,
                 detail: 'Output RMS ' + first.toFixed(3) + ' then ' + second.toFixed(3) + ' · ' + eng.clockState(),
             })
-            const features = analyzeTake(samples, eng.sampleRate(), songRef.current.bpm)
-            const built = arrangementToTracks(practiceArrangement(features), songRef.current.tracks, Date.now())
-            const added = built.tracks.filter((item) => item.wand)
-            const wandWaves: Record<string, Float32Array> = {}
-            let wandOk = added.length >= 2
-            added.forEach((item, index) => {
-                const part = built.arrangement.parts[index]
-                if (part == null) {
-                    wandOk = false
-                    return
-                }
-                eng.loadSamples(item.id, renderPart(part, songRef.current.bpm, eng.sampleRate()), eng.sampleRate())
-                const peaks = eng.peaks(item.id, 64)
-                wandWaves[item.id] = peaks
-                if (!waveformHasEnergy(peaks)) wandOk = false
-            })
-            setWaves((current) => ({ ...current, ...wandWaves }))
-            updateActive((current) => ({
-                ...current,
-                revisions: pushRevision(current, 'Before test wand', Date.now()),
-                tracks: built.tracks,
-            }))
-            lines.push({ name: 'Magic wand', pass: wandOk, detail: 'Mocked arrangement, no xAI call' })
-            const credits = wandFailureMessage(403)
+            const tone = sineTone(eng.sampleRate(), 450, 0.85)
+            eng.armInjection(tone)
+            await eng.record(track.id, false, { root: 9, scale: 'Major', strength: 100, bypass: false }, 'free')
+            await eng.waitForTake(4000)
+            const tunedClip = eng.copySamples(track.id)
+            const tunedTail = tunedClip == null ? null : tunedClip.samples.subarray(Math.floor(tunedClip.samples.length * 0.6))
+            const tunedHz = tunedTail == null ? 0 : estimatePitch(tunedTail, tunedClip == null ? eng.sampleRate() : tunedClip.rate)
+            const tuneCents = Math.abs(centsBetween(tunedHz, 440))
+            const tunePass = tunedHz > 0 && tuneCents <= 20
             lines.push({
-                name: 'Credits message',
-                pass: credits === 'Magic wand needs xAI credits',
-                detail: credits,
+                name: 'Auto-tune',
+                pass: tunePass,
+                detail: '450 → ' + (tunedHz > 0 ? tunedHz.toFixed(0) : '?') + ' Hz' + (tunePass ? ' ✓' : ''),
             })
-            setError(credits)
+            const profile = listenToVocal(samples, eng.sampleRate(), songRef.current.bpm)
+            profile.vocalVolume = track.volume
+            const built = localWand(profile, 1, songRef.current.tracks, Date.now())
+            const other = localWand(profile, 2, songRef.current.tracks, Date.now() + 1)
+            const added = built.tracks.filter((item) => item.wand)
+            const kept = built.tracks.find((item) => item.id === track.id)
+            let wandOk = added.length >= 2 && kept != null && !kept.wand && wandStamp(built) !== wandStamp(other)
+            applyWand(built, 'Before test wand')
+            added.forEach((item) => {
+                if (!waveformHasEnergy(eng.peaks(item.id, 64))) wandOk = false
+            })
+            lines.push({ name: 'Magic wand', pass: wandOk, detail: built.note })
         } catch (err) {
             lines.push({ name: 'Test', pass: false, detail: messageFrom(err) })
         }
@@ -572,9 +571,8 @@ export default function VoiceLooper(): JSX.Element {
                 <span>Beat {masterBeat(clock.elapsed, bpm)}</span>
                 <span>{masterLeft(clock.elapsed, bpm).toFixed(1)}s</span>
             </ProgressMeta>
-            {error === 'Magic wand needs xAI credits' && <Credits role="alert">Magic wand needs xAI credits</Credits>}
-            {((error != null && error !== 'Magic wand needs xAI credits') || clock.phase != null || takeLine !== '') && <ErrorText $bad={error != null && error !== 'Magic wand needs xAI credits'} role="status">
-                {error != null && error !== 'Magic wand needs xAI credits'
+            {(error != null || clock.phase != null || takeLine !== '') && <ErrorText $bad={error != null} role="status">
+                {error != null
                     ? error
                     : clock.phase === 'count-in'
                         ? 'Count-in…'
@@ -586,9 +584,12 @@ export default function VoiceLooper(): JSX.Element {
         <List>
             {tracks[0] != null && !tracks.some((item) => audio[item.id] || item.audioId !== '') &&
                 <Add type="button" id="VoiceLooperBigRec" onClick={() => onRecord(tracks[0], false)}>Record</Add>}
-            <Add type="button" id="VoiceLooperWand" onClick={() => { void onWand() }}>Magic wand</Add>
-            <Add type="button" id="VoiceLooperTest" disabled={testing} onClick={() => { void onTest() }}>{testing ? 'Testing…' : 'Test'}</Add>
-            <Add type="button" id="VoiceLooperClear" onClick={onClearSong}>Clear</Add>
+            <ToolRow>
+                <ToolButton type="button" id="VoiceLooperWand" $listen={listening} aria-label="Magic wand" title={listening ? 'Listening…' : 'Magic wand'} onClick={() => { void onWand() }}><WandIcon /></ToolButton>
+                <ToolButton type="button" id="VoiceLooperClear" aria-label="Clear" title="Clear" onClick={onClearSong}><ClearIcon /></ToolButton>
+                <ToolButton type="button" id="VoiceLooperTest" aria-label="Test" title="Test" disabled={testing} onClick={() => { void onTest() }}><TestIcon /></ToolButton>
+            </ToolRow>
+            {note !== '' && <ToolNote role="status">{note}</ToolNote>}
             {tracks.some((item) => item.wand) && <Add type="button" onClick={removeWand}>Remove wand tracks</Add>}
             {results.length > 0 && <Results id="VoiceLooperTestResults">
                 {results.map((line) =>
@@ -1126,14 +1127,39 @@ const ErrorText = styled.p<{ $bad?: boolean }>`
     font-size: 14px;
 `
 
-const Credits = styled.p`
-    margin: 10px 0 0;
-    padding: 10px 12px;
-    border-radius: 12px;
-    background: #3d2914;
-    color: #fff4d6;
-    font-size: 15px;
-    font-weight: 750;
+const ToolRow = styled.div`
+    display: flex;
+    gap: 10px;
+    align-items: center;
+`
+
+const wandPulse = keyframes`
+    0% { transform: scale(1); }
+    50% { transform: scale(1.14); }
+    100% { transform: scale(1); }
+`
+
+const ToolButton = styled.button<{ $listen?: boolean }>`
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 14px;
+    background: #e0e5ec;
+    box-shadow: ${p => p.$listen ? '0 0 0 3px #2f7a45' : raised};
+    color: ${p => p.$listen ? '#1f6b3a' : '#243038'};
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    animation: ${p => p.$listen ? wandPulse : 'none'} 0.8s ease-in-out infinite;
+    &:disabled { opacity: 0.45; }
+`
+
+const ToolNote = styled.p`
+    margin: 0;
+    max-width: 280px;
+    color: #5c6b76;
+    font-size: 13px;
+    font-weight: 650;
 `
 
 const Results = styled.div`
@@ -1361,6 +1387,38 @@ function Triangle(): JSX.Element {
 
 function Pause(): JSX.Element {
     return <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="2" width="4" height="14" fill="currentColor" /><rect x="11" y="2" width="4" height="14" fill="currentColor" /></svg>
+}
+
+function sineTone(rate: number, freq: number, seconds: number): Float32Array {
+    const length = Math.max(1, Math.floor(rate * seconds))
+    const out = new Float32Array(length)
+    for (let i = 0; i < length; i++) out[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.5
+    return out
+}
+
+function wandStamp(built: { arrangement: { chords: string[], parts: { notes: string[], pattern: string[] }[] } }): string {
+    return built.arrangement.chords.join(',') + '|' + built.arrangement.parts.map((part) => part.notes.join('.') + '/' + part.pattern.join('.')).join(';')
+}
+
+function WandIcon(): JSX.Element {
+    return <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+        <path d="M4 18 L14 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <path d="M13 5 L15 7 L17 5 L15 3 Z" fill="currentColor" />
+        <path d="M16 12 L16 15 M14.5 13.5 L17.5 13.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+}
+
+function ClearIcon(): JSX.Element {
+    return <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M5 6 H15 L14 17 H6 Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M8 6 V4 H12 V6 M8 9 V14 M12 9 V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+}
+
+function TestIcon(): JSX.Element {
+    return <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true">
+        <path d="M3 12 H7 L9 6 L12 16 L14 10 H19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
 }
 
 function Pencil(): JSX.Element {

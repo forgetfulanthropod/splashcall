@@ -10,9 +10,10 @@ const {
     scalePitchClasses,
     targetFrequency,
 } = require('../src/cards/voice-looper/theory')
+const { TUNER_SOURCE } = require('../src/cards/voice-looper/workletSource')
 const { dbFromRms, micAudioConstraints, needsAudioResume } = require('../src/cards/voice-looper/capture')
 const { encodeWav } = require('../src/cards/voice-looper/exportMix')
-const { arrangementToTracks, renderPart, wandFailureMessage } = require('../src/cards/voice-looper/wand')
+const { arrangementToTracks, centsBetween, estimatePitch, listenPlan, listenToVocal, localWand, noteFreq, renderPart, resolveWand, wandFailureMessage, WAND_LISTEN_MS } = require('../src/cards/voice-looper/wand')
 const { makeup, peaksPerPixel, rmsOf, testVoice, waveformHasEnergy } = require('../src/cards/voice-looper/waveform')
 const { createArrangement } = require('../server/wand')
 const { defaultTrack, freshLibrary } = require('../src/cards/voice-looper/song')
@@ -180,6 +181,111 @@ test('the wand adds parts and leaves the recording in place', function () {
     for (let i = 0; i < bass.length; i += 10) energy += bass[i] * bass[i]
     assert.ok(energy > 0)
     assert.equal(wandFailureMessage(403), 'Magic wand needs xAI credits')
+})
+
+test('the wand listens for 2 seconds and each tap builds a new progression', function () {
+    assert.equal(WAND_LISTEN_MS, 2000)
+    assert.deepEqual(listenPlan(true), { ms: 2000, source: 'take' })
+    assert.deepEqual(listenPlan(false), { ms: 2000, source: 'mic' })
+    const profile = { tonic: 0, key: 0, keyName: 'C', lowHz: 220, highHz: 440, density: 0.7, vocalVolume: 80, bpm: 90 }
+    const user = [defaultTrack({ id: 'vocals', name: 'My voice', audioId: 'take-1', volume: 80, bars: 'free' })]
+    const first = localWand(profile, 1, user, 11)
+    const second = localWand(profile, 2, user, 12)
+    assert.equal(first.tracks[0].id, 'vocals')
+    assert.equal(first.tracks[0].audioId, 'take-1')
+    assert.equal(first.tracks[0].wand, false)
+    assert.notEqual(wandStamp(first), wandStamp(second))
+    assert.equal(wandStamp(localWand(profile, 2, user, 99)), wandStamp(second))
+    assert.equal(first.note, first.arrangement.chords.join(' – '))
+    first.arrangement.parts.forEach((part) => {
+        assert.ok(part.volume < 80)
+        if (part.kind === 'bass') {
+            part.notes.forEach((note) => assert.ok(noteFreq(note) < profile.lowHz * 0.98))
+        }
+        if (part.kind === 'pad' && !part.thin) {
+            const below = part.notes.every((note) => noteFreq(note) < profile.lowHz * 0.98)
+            const above = part.notes.every((note) => noteFreq(note) > profile.highHz * 1.8)
+            assert.ok(below || above)
+        }
+        if (part.kind === 'drums') assert.ok(part.pattern.indexOf('rest') >= 0)
+    })
+    const heard = listenToVocal(testVoice(8000, 0.6), 8000, 90)
+    assert.ok(heard.lowHz > 70 && heard.highHz >= heard.lowHz)
+    assert.ok(heard.density >= 0 && heard.density <= 1)
+})
+
+function wandStamp(built) {
+    return built.arrangement.chords.join(',') + '|' + built.arrangement.parts.map((part) => (part.notes || []).join('.') + '/' + (part.pattern || []).join('.')).join(';')
+}
+
+function runTuner(samples, sampleRate, mask) {
+    global.sampleRate = sampleRate
+    let Processor = null
+    const chunks = []
+    global.AudioWorkletProcessor = class {
+        constructor() {
+            this.port = {
+                onmessage: null,
+                postMessage(msg) { if (msg && msg.samples) chunks.push(msg.samples) },
+            }
+        }
+    }
+    global.registerProcessor = function (_name, cls) { Processor = cls }
+    eval(TUNER_SOURCE)
+    const node = new Processor()
+    node.port.onmessage({ data: { type: 'config', strength: 1, bypass: false, mask } })
+    node.port.onmessage({ data: { type: 'record', on: true, delaySamples: 0 } })
+    const block = 128
+    const input = new Float32Array(block)
+    for (let at = 0; at < samples.length; at += block) {
+        for (let j = 0; j < block; j++) input[j] = at + j < samples.length ? samples[at + j] : 0
+        node.process([[input]], [[new Float32Array(block)]])
+    }
+    const recorded = new Float32Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0))
+    let offset = 0
+    chunks.forEach((chunk) => { recorded.set(chunk, offset); offset += chunk.length })
+    return recorded
+}
+
+test('auto-tune pulls 450 Hz onto A 440 through the worklet', function () {
+    const rate = 48000
+    const length = Math.floor(rate * 0.85)
+    const tone = new Float32Array(length)
+    for (let i = 0; i < length; i++) tone[i] = Math.sin(2 * Math.PI * 450 * i / rate) * 0.5
+    const recorded = runTuner(tone, rate, scalePitchClasses(9, 'Major'))
+    const tail = recorded.subarray(Math.floor(recorded.length * 0.65))
+    const hz = estimatePitch(tail, rate)
+    const cents = Math.abs(centsBetween(hz, 440))
+    assert.ok(hz > 0, 'no pitch')
+    assert.ok(cents <= 15, '450 Hz landed on ' + hz.toFixed(1) + ' Hz (' + cents.toFixed(1) + ' cents)')
+})
+
+test('a failed wand still adds local parts and keeps the recording', function () {
+    const user = [defaultTrack({ id: 'vocals', name: 'My voice', audioId: 'take-1', bars: 'free' })]
+    const features = { bpm: 90, key: 0, keyName: 'C', scale: 'Major', loopSeconds: 2, rms: 0.2, peak: 0.4, bars: 1 }
+    const failed = resolveWand(null, features, user, 5)
+    assert.equal(failed.local, true)
+    assert.ok(failed.note.indexOf('AI fill needs xAI credits') >= 0)
+    assert.equal(failed.tracks[0].id, 'vocals')
+    assert.equal(failed.tracks[0].audioId, 'take-1')
+    assert.equal(failed.tracks[0].wand, false)
+    assert.ok(failed.tracks.filter((track) => track.wand).length >= 2)
+    const again = resolveWand({ arrangement: null }, features, user, 5)
+    assert.equal(again.local, true)
+    assert.deepEqual(again.arrangement.parts.map((part) => part.name), failed.arrangement.parts.map((part) => part.name))
+    const live = resolveWand({
+        arrangement: {
+            chords: ['D'],
+            barsEach: 2,
+            parts: [{ name: 'Only bass', kind: 'bass', notes: ['D2'], pattern: [], startBar: 0, endBar: 4 }],
+        },
+        mock: false,
+    }, features, user, 9)
+    assert.equal(live.local, false)
+    assert.equal(live.note.indexOf('AI fill needs xAI credits'), -1)
+    assert.equal(live.tracks[0].audioId, 'take-1')
+    assert.equal(live.tracks.filter((track) => track.wand).length, 1)
+    assert.equal(live.tracks[1].name, 'Only bass')
 })
 
 test('a 403 from xAI is named instead of a generic failure', async function () {
