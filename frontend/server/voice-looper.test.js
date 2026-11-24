@@ -13,6 +13,7 @@ const {
 const { dbFromRms, micAudioConstraints, needsAudioResume } = require('../src/cards/voice-looper/capture')
 const { encodeWav } = require('../src/cards/voice-looper/exportMix')
 const { arrangementToTracks, renderPart, wandFailureMessage } = require('../src/cards/voice-looper/wand')
+const { makeup, peaksPerPixel, rmsOf, testVoice, waveformHasEnergy } = require('../src/cards/voice-looper/waveform')
 const { createArrangement } = require('../server/wand')
 const { defaultTrack, freshLibrary } = require('../src/cards/voice-looper/song')
 const {
@@ -69,6 +70,9 @@ test('the mic is recorded raw so speaker playback is not cancelled', function ()
     assert.equal(audio.echoCancellation, false)
     assert.equal(audio.noiseSuppression, false)
     assert.equal(audio.autoGainControl, false)
+    assert.equal(audio.googEchoCancellation, false)
+    assert.equal(audio.googAutoGainControl, false)
+    assert.equal(audio.channelCount, 1)
     assert.equal(needsAudioResume('suspended'), true)
     assert.equal(needsAudioResume('interrupted'), true)
     assert.equal(needsAudioResume('running'), false)
@@ -194,6 +198,81 @@ test('a WAV bounce starts with a RIFF header', function () {
     assert.equal(String.fromCharCode(wav[0], wav[1], wav[2], wav[3]), 'RIFF')
     assert.equal(String.fromCharCode(wav[8], wav[9], wav[10], wav[11]), 'WAVE')
 })
+
+test('a take that ends mid-cycle starts now instead of a lap later', function () {
+    const points = schedulePoints(1.2, 2.2, 90, 0.5, {}, 0, 8)
+    assert.ok(points.length >= 2)
+    assert.ok(points[0].songTime >= 1.2 - 0.001)
+    assert.ok(points[0].songTime < 1.3)
+    assert.ok(points[0].offset > 0.15)
+    assert.ok(points[0].duration > 0.1)
+    assert.ok(points[1].songTime >= points[0].songTime + points[0].duration - 0.001)
+})
+
+test('a quiet phone take is lifted and a loud test voice is left alone', function () {
+    const quiet = new Float32Array(2000)
+    for (let i = 0; i < quiet.length; i++) quiet[i] = Math.sin(i / 7) * 0.021
+    const lifted = makeup(quiet)
+    assert.ok(rmsOf(quiet) < 0.03)
+    assert.ok(rmsOf(lifted) > 0.15)
+    assert.ok(peakOfSafe(lifted) <= 1)
+    const voice = testVoice(8000, 0.4)
+    assert.ok(rmsOf(voice) > 0.08)
+    assert.equal(makeup(voice), voice)
+    const peaks = peaksPerPixel(voice, 48)
+    assert.equal(waveformHasEnergy(peaks), true)
+    assert.equal(waveformHasEnergy(peaksPerPixel(new Float32Array(100), 16)), false)
+})
+
+test('an autosaved demo song opens empty, and a real take is kept once', function () {
+    const demo = migrate({
+        version: 1,
+        activeId: 'song-1',
+        songs: [{
+            id: 'song-1',
+            name: 'Song 1',
+            tracks: [
+                { id: 'vocals', name: 'Vocals' },
+                { id: 'harmony', name: 'Harmony' },
+                { id: 'beatbox', name: 'Beatbox' },
+                { id: 'bass', name: 'Bass' },
+                { id: 'track-5', name: 'Track 5' },
+            ],
+        }],
+    })
+    assert.equal(demo.songs[0].tracks.length, 1)
+    assert.equal(demo.songs[0].tracks[0].name, 'Track 1')
+    assert.equal(demo.songs[0].tracks[0].audioId, '')
+    assert.equal(demo.songs[0].tracks.some((track) => track.name === 'Harmony'), false)
+    const kept = migrate({
+        version: 1,
+        activeId: 'song-1',
+        songs: [{
+            id: 'song-1',
+            name: 'Song 1',
+            tracks: [
+                { id: 'vocals', name: 'Vocals', audioId: 'take-quiet' },
+                { id: 'harmony', name: 'Harmony' },
+                { id: 'beatbox', name: 'Beatbox' },
+                { id: 'bass', name: 'Bass' },
+                { id: 'track-5', name: 'Track 5' },
+            ],
+        }],
+    })
+    assert.equal(kept.songs[0].tracks.length, 1)
+    assert.equal(kept.songs[0].tracks[0].audioId, 'take-quiet')
+    assert.equal(kept.songs[0].tracks.some((track) => track.name === 'Beatbox'), false)
+    assert.equal(kept.songs[0].tracks.some((track) => track.name === 'Track 5'), false)
+})
+
+function peakOfSafe(samples) {
+    let peak = 0
+    for (let i = 0; i < samples.length; i++) {
+        const abs = samples[i] < 0 ? -samples[i] : samples[i]
+        if (abs > peak) peak = abs
+    }
+    return peak
+}
 
 test('the clock wraps inside the loop', function () {
     const spot = loopPosition(5, 20, 8)

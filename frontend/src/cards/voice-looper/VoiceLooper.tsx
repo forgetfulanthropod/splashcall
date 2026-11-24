@@ -7,7 +7,8 @@ import { bounce, saveBytes } from './exportMix'
 import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
 import PlaySheet, { SheetTab } from './PlaySheet'
 import { chordAt, defaultSong, defaultTrack, freshLibrary, hashSamples, Library, parseProgression, pushRevision, restoreRevision, Song, SongTrack } from './song'
-import { analyzeTake, arrangementToTracks, renderPart, wandFailureMessage } from './wand'
+import { analyzeTake, arrangementToTracks, practiceArrangement, renderPart, wandFailureMessage } from './wand'
+import { drawWaveform, testVoice, waveformHasEnergy } from './waveform'
 import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
 
@@ -15,6 +16,8 @@ const SCALES: ScaleName[] = ['Major', 'Minor', 'Dorian', 'Mixolydian', 'Pentaton
 const LENGTHS: LoopLength[] = [1, 2, 4, 8, 'free']
 
 type Track = SongTrack
+
+type TestLine = { name: string, pass: boolean, detail: string }
 
 function tuneOf(track: Track): TuneSettings {
     return { root: track.root, scale: track.scale, strength: track.strength, bypass: track.bypass }
@@ -38,6 +41,9 @@ export default function VoiceLooper(): JSX.Element {
     const [tab, setTab] = useState<SheetTab>('Song')
     const [note, setNote] = useState('')
     const [takeLine, setTakeLine] = useState('')
+    const [waves, setWaves] = useState<Record<string, Float32Array>>({})
+    const [results, setResults] = useState<TestLine[]>([])
+    const [testing, setTesting] = useState(false)
     const inputTrim = song.inputTrim
     const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
@@ -90,6 +96,7 @@ export default function VoiceLooper(): JSX.Element {
                     const stamp = hashSamples(clip.samples) + 'r' + clip.rate
                     if (savedAudio.current[track.id] === stamp) return
                     savedAudio.current[track.id] = stamp
+                    setWaves((prev) => ({ ...prev, [track.id]: current.peaks(track.id, 96) }))
                     rememberAudio(clip.samples, clip.rate).then((id) => {
                         updateActive((currentSong) => ({
                             ...currentSong,
@@ -236,7 +243,9 @@ export default function VoiceLooper(): JSX.Element {
             recallAudio(track.audioId).then((clip) => {
                 if (cancel || clip == null) return
                 savedAudio.current[track.id] = track.audioId
-                engine().loadSamples(track.id, clip.samples, clip.rate)
+                const eng = engine()
+                eng.loadSamples(track.id, clip.samples, clip.rate)
+                setWaves((prev) => ({ ...prev, [track.id]: eng.peaks(track.id, 96) }))
             }).catch(() => { /* a missing take stays empty */ })
         })
         return () => { cancel = true }
@@ -368,7 +377,9 @@ export default function VoiceLooper(): JSX.Element {
             added.forEach((track, index) => {
                 const part = built.arrangement.parts[index]
                 if (part == null) return
-                engine().loadSamples(track.id, renderPart(part, song.bpm, 44100), 44100)
+                const rendered = renderPart(part, song.bpm, 44100)
+                engine().loadSamples(track.id, rendered, 44100)
+                setWaves((current) => ({ ...current, [track.id]: engine().peaks(track.id, 96) }))
             })
             const chords = parseProgression(built.arrangement.chords.join(' '))
             updateActive((current) => ({
@@ -418,6 +429,114 @@ export default function VoiceLooper(): JSX.Element {
         if (sheetId === id) setSheetId(null)
     }
 
+    function onClearSong(): void {
+        const nextSong = defaultSong({ id: song.id, name: song.name, bpm: song.bpm })
+        const next = {
+            ...library,
+            songs: library.songs.map((item) => item.id === library.activeId ? nextSong : item),
+        }
+        engine().clearSongAudio()
+        savedAudio.current = {}
+        setAudio({})
+        setWaves({})
+        setTakeLine('')
+        setError(null)
+        setResults([])
+        setNote('Cleared. This song is empty.')
+        setLibrary(next)
+        const warning = writeLibrary(next)
+        if (warning !== '') setError(warning)
+        retainAudio(library, next).catch(() => { /* a private window may block storage */ })
+    }
+
+    async function onTest(): Promise<void> {
+        const eng = engine()
+        eng.prime()
+        setTesting(true)
+        setError(null)
+        setResults([{ name: 'Running', pass: true, detail: 'Injecting a test voice…' }])
+        const lines: TestLine[] = []
+        try {
+            const track = tracksRef.current[0]
+            if (track == null) throw new Error('Add a track first.')
+            eng.setCountIn(false)
+            eng.setInputTrim(1)
+            eng.configure(track.id, {
+                bars: 'free',
+                preGapBeats: 0,
+                postGapBeats: 0,
+                preGapMs: 0,
+                postGapMs: 0,
+                startBar: track.startBar,
+                endBar: Math.max(track.endBar, 4),
+                distortMix: 0,
+                distortPoints: track.distort.points,
+                sections: [],
+            })
+            patch(track.id, { bars: 'free', strength: 0, bypass: true, preGapBeats: 0, postGapBeats: 0, preGapMs: 0, postGapMs: 0 })
+            await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)))
+            const samples = testVoice(eng.sampleRate(), 0.5)
+            eng.armInjection(samples)
+            await eng.record(track.id, false, { root: track.root, scale: track.scale, strength: 0, bypass: true }, 'free')
+            const take = await eng.waitForTake(4000)
+            const saved = take != null && take.rms >= 0.08 && take.samples > eng.sampleRate() * 0.2
+            lines.push({
+                name: 'Saved',
+                pass: saved,
+                detail: take == null
+                    ? 'No take arrived (' + eng.clockState() + ')'
+                    : 'RMS ' + take.rms.toFixed(3) + ' · ' + take.via + ' · ' + take.samples + ' samples',
+            })
+            const wave = eng.peaks(track.id, 96)
+            setWaves((current) => ({ ...current, [track.id]: wave }))
+            const drawn = waveformHasEnergy(wave)
+            lines.push({ name: 'Waveform', pass: drawn, detail: drawn ? 'Peaks are drawn from the buffer' : 'The buffer is flat' })
+            const first = await eng.measureOutput(450)
+            await new Promise((resolve) => window.setTimeout(resolve, 420))
+            const second = await eng.measureOutput(300)
+            const looped = first >= 0.05 && second >= 0.05
+            lines.push({
+                name: 'Playback',
+                pass: looped,
+                detail: 'Output RMS ' + first.toFixed(3) + ' then ' + second.toFixed(3) + ' · ' + eng.clockState(),
+            })
+            const features = analyzeTake(samples, eng.sampleRate(), songRef.current.bpm)
+            const built = arrangementToTracks(practiceArrangement(features), songRef.current.tracks, Date.now())
+            const added = built.tracks.filter((item) => item.wand)
+            const wandWaves: Record<string, Float32Array> = {}
+            let wandOk = added.length >= 2
+            added.forEach((item, index) => {
+                const part = built.arrangement.parts[index]
+                if (part == null) {
+                    wandOk = false
+                    return
+                }
+                eng.loadSamples(item.id, renderPart(part, songRef.current.bpm, eng.sampleRate()), eng.sampleRate())
+                const peaks = eng.peaks(item.id, 64)
+                wandWaves[item.id] = peaks
+                if (!waveformHasEnergy(peaks)) wandOk = false
+            })
+            setWaves((current) => ({ ...current, ...wandWaves }))
+            updateActive((current) => ({
+                ...current,
+                revisions: pushRevision(current, 'Before test wand', Date.now()),
+                tracks: built.tracks,
+            }))
+            lines.push({ name: 'Magic wand', pass: wandOk, detail: 'Mocked arrangement, no xAI call' })
+            const credits = wandFailureMessage(403)
+            lines.push({
+                name: 'Credits message',
+                pass: credits === 'Magic wand needs xAI credits',
+                detail: credits,
+            })
+            setError(credits)
+        } catch (err) {
+            lines.push({ name: 'Test', pass: false, detail: messageFrom(err) })
+        }
+        setResults(lines)
+        setTesting(false)
+    }
+
     return <Root>
         <Header>
             <Title>Voice Looper</Title>
@@ -453,8 +572,9 @@ export default function VoiceLooper(): JSX.Element {
                 <span>Beat {masterBeat(clock.elapsed, bpm)}</span>
                 <span>{masterLeft(clock.elapsed, bpm).toFixed(1)}s</span>
             </ProgressMeta>
-            {(error != null || clock.phase != null || takeLine !== '') && <ErrorText role="alert">
-                {error != null
+            {error === 'Magic wand needs xAI credits' && <Credits role="alert">Magic wand needs xAI credits</Credits>}
+            {((error != null && error !== 'Magic wand needs xAI credits') || clock.phase != null || takeLine !== '') && <ErrorText $bad={error != null && error !== 'Magic wand needs xAI credits'} role="status">
+                {error != null && error !== 'Magic wand needs xAI credits'
                     ? error
                     : clock.phase === 'count-in'
                         ? 'Count-in…'
@@ -467,7 +587,14 @@ export default function VoiceLooper(): JSX.Element {
             {tracks[0] != null && !tracks.some((item) => audio[item.id] || item.audioId !== '') &&
                 <Add type="button" id="VoiceLooperBigRec" onClick={() => onRecord(tracks[0], false)}>Record</Add>}
             <Add type="button" id="VoiceLooperWand" onClick={() => { void onWand() }}>Magic wand</Add>
+            <Add type="button" id="VoiceLooperTest" disabled={testing} onClick={() => { void onTest() }}>{testing ? 'Testing…' : 'Test'}</Add>
+            <Add type="button" id="VoiceLooperClear" onClick={onClearSong}>Clear</Add>
             {tracks.some((item) => item.wand) && <Add type="button" onClick={removeWand}>Remove wand tracks</Add>}
+            {results.length > 0 && <Results id="VoiceLooperTestResults">
+                {results.map((line) =>
+                    <Result key={line.name} $pass={line.pass}>{line.pass ? 'Pass' : 'Fail'} · {line.name} · {line.detail}</Result>
+                )}
+            </Results>}
             {tracks.map((track) => {
                 const recording = clock.recordId === track.id
                 return <Row key={track.id} id={'loop-track-' + track.id}>
@@ -488,6 +615,7 @@ export default function VoiceLooper(): JSX.Element {
                         <IconButton type="button" aria-label={'Rename ' + track.name} onClick={() => setEditing(track.id)}>
                             <Pencil />
                         </IconButton>
+                        <GainDial label={track.name + ' volume'} value={track.volume} onChange={(volume) => patch(track.id, { volume })} />
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{keyLabel(track.root, track.scale)}</Chip>
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{track.bypass ? 'off' : track.strength + '%'}</Chip>
                     </RowLine>
@@ -505,9 +633,7 @@ export default function VoiceLooper(): JSX.Element {
                             >{length === 'free' ? 'Free' : length + (length === 1 ? ' bar' : ' bars')}</Chip>
                         )}
                     </RowLine>
-                    <TrackMeter aria-hidden="true">
-                        <TrackMeterFill style={{ width: ((clock.progress[track.id] || 0) * 100) + '%' }} />
-                    </TrackMeter>
+                    <TrackWave peaks={waves[track.id]} progress={clock.progress[track.id] || 0} label={'Waveform of ' + track.name} />
                     <RowLine>
                         <Tiny
                             type="button"
@@ -565,6 +691,7 @@ export default function VoiceLooper(): JSX.Element {
             inputTrim={inputTrim}
             note={note}
             waveRef={waveRef}
+            waves={waves}
             songs={library.songs.map((item) => ({ id: item.id, name: item.name, updated: item.updated, bars: item.songBars, bpm: item.bpm }))}
             onTab={setTab}
             onClose={() => setSheetOpen(false)}
@@ -600,11 +727,7 @@ export default function VoiceLooper(): JSX.Element {
                 const copy = defaultSong({ ...source, id: 'song-' + Date.now(), name: source.name + ' copy', revisions: [] })
                 return { ...current, activeId: copy.id, songs: current.songs.concat([copy]) }
             })}
-            onClear={() => {
-                if (!window.confirm('Clear this song?')) return
-                updateActive(() => defaultSong({ id: song.id, name: song.name }))
-                engine().clearSongAudio()
-            }}
+            onClear={onClearSong}
             onWav={() => { void exportSong(true) }}
             onMp4={() => { void exportSong(false) }}
             onNew={() => setLibrary((current) => {
@@ -658,6 +781,56 @@ export default function VoiceLooper(): JSX.Element {
             </Sheet>
         </SheetBackdrop>}
     </Root>
+}
+
+function TrackWave(props: { peaks?: Float32Array, progress: number, label: string }): JSX.Element {
+    const ref = useRef<HTMLCanvasElement | null>(null)
+    useEffect(() => {
+        const canvas = ref.current
+        if (canvas == null) return
+        drawWaveform(canvas, props.peaks, '#1f6b3a')
+    }, [props.peaks])
+    return <WaveBox>
+        <canvas ref={ref} width={360} height={36} aria-label={props.label} />
+        <WaveHead style={{ left: (Math.max(0, Math.min(1, props.progress)) * 100) + '%' }} />
+    </WaveBox>
+}
+
+function GainDial(props: { label: string, value: number, onChange: (value: number) => void }): JSX.Element {
+    const drag = useRef<{ y: number, value: number } | null>(null)
+    const [hot, setHot] = useState(false)
+    const angle = -140 + (props.value / 100) * 280
+    return <Dial
+        type="button"
+        $hot={hot}
+        role="slider"
+        aria-label={props.label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(props.value)}
+        onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId)
+            drag.current = { y: event.clientY, value: props.value }
+            setHot(true)
+        }}
+        onPointerMove={(event) => {
+            const start = drag.current
+            if (start == null) return
+            const next = Math.max(0, Math.min(100, Math.round(start.value + (start.y - event.clientY) * 0.55)))
+            props.onChange(next)
+        }}
+        onPointerUp={() => {
+            drag.current = null
+            setHot(false)
+        }}
+        onPointerCancel={() => {
+            drag.current = null
+            setHot(false)
+        }}
+    >
+        <DialFace style={{ transform: 'rotate(' + angle + 'deg)' }} />
+        {hot && <DialReadout>{Math.round(props.value)}</DialReadout>}
+    </Dial>
 }
 
 function drawWave(canvas: HTMLCanvasElement, wave: Float32Array): void {
@@ -947,10 +1120,92 @@ const ProgressMeta = styled.div`
     color: #3d4c46;
 `
 
-const ErrorText = styled.p`
+const ErrorText = styled.p<{ $bad?: boolean }>`
     margin: 8px 0 0;
-    color: #9d1c1c;
+    color: ${p => p.$bad ? '#9d1c1c' : '#243038'};
     font-size: 14px;
+`
+
+const Credits = styled.p`
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #3d2914;
+    color: #fff4d6;
+    font-size: 15px;
+    font-weight: 750;
+`
+
+const Results = styled.div`
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border-radius: 14px;
+    background: #e7eef3;
+`
+
+const Result = styled.p<{ $pass?: boolean }>`
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: ${p => p.$pass ? '#1f6b3a' : '#9d1c1c'};
+`
+
+const WaveBox = styled.div`
+    position: relative;
+    height: 36px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #e7edf3;
+    canvas {
+        width: 100%;
+        height: 36px;
+        display: block;
+    }
+`
+
+const WaveHead = styled.div`
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #243038;
+`
+
+const Dial = styled.button<{ $hot?: boolean }>`
+    margin-left: auto;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    border: 0;
+    border-radius: 50%;
+    position: relative;
+    touch-action: none;
+    z-index: ${p => p.$hot ? 40 : 1};
+    transform: ${p => p.$hot ? 'scale(2.05)' : 'none'};
+    background: #e0e5ec;
+    box-shadow: ${p => p.$hot ? '0 10px 24px rgb(36 48 56 / 28%)' : raised};
+`
+
+const DialFace = styled.span`
+    position: absolute;
+    left: 20px;
+    top: 6px;
+    width: 4px;
+    height: 14px;
+    border-radius: 99px;
+    background: #1f6b3a;
+`
+
+const DialReadout = styled.span`
+    position: absolute;
+    left: 50%;
+    top: -18px;
+    transform: translateX(-50%);
+    font-size: 13px;
+    font-weight: 750;
+    color: #243038;
 `
 
 const List = styled.div`
@@ -968,6 +1223,7 @@ const Row = styled.div`
     border-radius: 18px;
     background: #e7eef3;
     box-shadow: ${raised};
+    overflow: visible;
 `
 
 const RowLine = styled.div`
@@ -975,19 +1231,6 @@ const RowLine = styled.div`
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-`
-
-const TrackMeter = styled.div`
-    height: 8px;
-    border-radius: 999px;
-    background: #d5dbe3;
-    box-shadow: ${inset};
-    overflow: hidden;
-`
-
-const TrackMeterFill = styled.div`
-    height: 100%;
-    background: #2f7a45;
 `
 
 const Name = styled.span`

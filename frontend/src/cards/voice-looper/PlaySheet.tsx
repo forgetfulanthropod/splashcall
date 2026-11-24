@@ -3,6 +3,7 @@ import styled from 'styled-components'
 import { MicLevel } from './engine'
 import { Song, SongTrack, formatClock, parseProgression, PRESETS, songSeconds } from './song'
 import { barSeconds } from './theory'
+import { drawLane } from './waveform'
 
 const TABS = ['Song', 'Mic', 'Chords', 'Distort', 'Revisions', 'Other'] as const
 export type SheetTab = typeof TABS[number]
@@ -37,6 +38,7 @@ type Props = {
     onSwitch: (id: string) => void
     songs: { id: string, name: string, updated: number, bars: number, bpm: number }[]
     waveRef: React.RefObject<HTMLCanvasElement>
+    waves: Record<string, Float32Array | undefined>
 }
 
 export default function PlaySheet(props: Props): JSX.Element {
@@ -65,6 +67,7 @@ export default function PlaySheet(props: Props): JSX.Element {
                 onTrack={props.onTrack}
                 selected={track.id}
                 onSelect={setSelected}
+                waves={props.waves}
             />
             <Field>Before {track.name}</Field>
             <Row>
@@ -187,6 +190,7 @@ function Timeline(props: {
     song: Song
     elapsed: number
     selected: string
+    waves: Record<string, Float32Array | undefined>
     onSeek: (seconds: number) => void
     onTrack: (id: string, partial: Partial<SongTrack>) => void
     onSelect: (id: string) => void
@@ -201,19 +205,15 @@ function Timeline(props: {
             {props.song.tracks.map((track) =>
                 <Lane key={track.id} $on={track.id === props.selected} onClick={() => props.onSelect(track.id)}>
                     <LaneName>{track.name}</LaneName>
-                    {Array.from({ length: props.song.songBars }, (_item, bar) => {
-                        const on = bar >= track.startBar && bar < track.endBar
-                        return <Cell
-                            key={bar}
-                            $on={on}
-                            style={{ width: cell }}
-                            onPointerDown={(event) => {
-                                event.stopPropagation()
-                                const next = nudge(track, bar)
-                                props.onTrack(track.id, next)
-                            }}
-                        />
-                    })}
+                    <LaneWave
+                        peaks={props.waves[track.id]}
+                        width={Math.max(cell, width - 64)}
+                        songBars={props.song.songBars}
+                        startBar={track.startBar}
+                        endBar={track.endBar}
+                        loopBars={track.bars}
+                        onBar={(bar) => props.onTrack(track.id, nudge(track, bar))}
+                    />
                 </Lane>
             )}
             <Ruler onClick={(event) => {
@@ -226,6 +226,47 @@ function Timeline(props: {
             }} />
         </Board>
     </Scroller>
+}
+
+function LaneWave(props: {
+    peaks?: Float32Array
+    width: number
+    songBars: number
+    startBar: number
+    endBar: number
+    loopBars: SongTrack['bars']
+    onBar: (bar: number) => void
+}): JSX.Element {
+    const ref = useRef<HTMLCanvasElement | null>(null)
+    useEffectLane(ref, props)
+    return <LaneCanvas
+        ref={ref}
+        width={Math.max(1, Math.floor(props.width))}
+        height={32}
+        aria-label="Track waveform"
+        onPointerDown={(event) => {
+            event.stopPropagation()
+            const rect = event.currentTarget.getBoundingClientRect()
+            const x = event.clientX - rect.left
+            const bar = Math.max(0, Math.min(props.songBars - 1, Math.floor(x / rect.width * props.songBars)))
+            props.onBar(bar)
+        }}
+    />
+}
+
+function useEffectLane(ref: React.RefObject<HTMLCanvasElement | null>, props: {
+    peaks?: Float32Array
+    songBars: number
+    startBar: number
+    endBar: number
+    loopBars: SongTrack['bars']
+}): void {
+    const { peaks, songBars, startBar, endBar, loopBars } = props
+    React.useEffect(() => {
+        const canvas = ref.current
+        if (canvas == null) return
+        drawLane(canvas, peaks, songBars, startBar, endBar, loopBars)
+    }, [ref, peaks, songBars, startBar, endBar, loopBars])
 }
 
 function nudge(track: SongTrack, bar: number): Partial<SongTrack> {
@@ -343,7 +384,7 @@ const Playhead = styled.div`
 const Lane = styled.div<{ $on?: boolean }>`
     display: flex;
     align-items: center;
-    height: 28px;
+    height: 36px;
     outline: ${p => p.$on ? '2px solid #2f7a45' : 'none'};
 `
 const LaneName = styled.span`
@@ -355,12 +396,11 @@ const LaneName = styled.span`
     font-weight: 700;
     background: #e7edf3;
 `
-const Cell = styled.button<{ $on?: boolean }>`
-    height: 18px;
-    border: 0;
-    border-right: 1px solid #d5dbe3;
-    background: ${p => p.$on ? '#2f7a45' : 'transparent'};
-    padding: 0;
+const LaneCanvas = styled.canvas`
+    height: 32px;
+    display: block;
+    touch-action: none;
+    background: #e7edf3;
 `
 const Ruler = styled.div`
     height: 18px;

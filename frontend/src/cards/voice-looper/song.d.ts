@@ -51,7 +51,7 @@ export type Song = {
 }
 export type Library = { version: number, activeId: string, songs: Song[] }
 export type Placement = { sounding: boolean, offset: number, through: number, bar: number }
-export type SchedulePoint = { songTime: number, offset: number, duration: number }
+export type SchedulePoint = { songTime: number, offset: number, duration: number, cycle: number }
 
 export function gapSeconds(beats: number, ms: number, bpm: number): number
 export function cycleOf(bpm: number, loopLength: number, gaps: { preGapBeats?: number, preGapMs?: number, postGapBeats?: number, postGapMs?: number }): { pre: number, loop: number, post: number, cycle: number }

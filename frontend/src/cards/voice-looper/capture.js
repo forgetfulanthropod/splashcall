@@ -1,7 +1,8 @@
 /**
  * Microphone options shared by the looper and the tests.
- * Echo cancellation is off on purpose: the looper plays the take back
- * through the speakers while it records, and cancellation deletes the voice.
+ * Echo cancellation stays off: Android will still try to cancel the mic
+ * against anything the page plays out of the speaker. The capture graph
+ * keeps that feed at zero and these flags ask Chrome not to add its own.
  */
 
 function micAudioConstraints() {
@@ -9,6 +10,11 @@ function micAudioConstraints() {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
+        channelCount: 1,
+        googEchoCancellation: false,
+        googNoiseSuppression: false,
+        googAutoGainControl: false,
+        googHighpassFilter: false,
     }
 }
 
