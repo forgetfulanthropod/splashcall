@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@capacitor/core": "^8.6.0",
+    "@capacitor/filesystem": "^8.1.5",
     "@capacitor/haptics": "^8.0.2",
     "@capacitor/share": "^8.0.3",
     "@reach/checkbox": "^0.16.0",
@@ -68,7 +69,9 @@
     "typescript-strict-plugin": "^1.1.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "browserslist": {
     "development": [

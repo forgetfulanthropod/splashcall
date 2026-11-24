@@ -1,4 +1,5 @@
 import { dbFromRms, micAudioConstraints, needsAudioResume } from './capture'
+import { driveAt, placement, schedulePoints, sectionDrive, shaperSamples, songSeconds } from './song'
 import { barSeconds, loopSeconds, recordDownbeat, scalePitchClasses } from './theory'
 import { TUNER_SOURCE } from './workletSource'
 
@@ -29,12 +30,29 @@ export type EngineSnapshot = {
     progress: Record<string, number>
 }
 
+type DrivePoint = { x: number, y: number }
+type SectionDrive = { bar: number, drive: number }
+
 type TrackNode = {
     gain: GainNode
-    source: AudioBufferSourceNode | null
+    dry: GainNode
+    wet: GainNode
+    shaper: WaveShaperNode
+    sources: AudioBufferSourceNode[]
+    armed: Set<string>
     buffer: AudioBuffer | null
     bars: LoopLength
     freeSeconds: number
+    preGapBeats: number
+    postGapBeats: number
+    preGapMs: number
+    postGapMs: number
+    startBar: number
+    endBar: number
+    distortMix: number
+    distortPoints: DrivePoint[]
+    sections: SectionDrive[]
+    lastDrive: number
 }
 
 type Take = {
@@ -66,6 +84,9 @@ export class LoopEngine {
     private tracks = new Map<string, TrackNode>()
     private playing = false
     private startedAt = 0
+    private playhead = 0
+    private songBars = 32
+    private metroVolume = 0.7
     private bpm = 90
     private metronome = false
     private countIn = true
@@ -252,11 +273,11 @@ export class LoopEngine {
         if (this.recording != null && this.ctx != null && this.ctx.currentTime >= this.recording.recordAt) {
             this.recording.phase = 'recording'
         }
-        const elapsed = this.playing && this.ctx != null ? this.ctx.currentTime - this.startedAt : 0
+        const elapsed = this.songElapsed()
         const progress: Record<string, number> = {}
         this.tracks.forEach((track, id) => {
-            const duration = this.durationOf(track)
-            progress[id] = elapsed > 0 && duration > 0 ? ((elapsed % duration) + duration) % duration / duration : 0
+            const place = placement(elapsed, this.bpm, this.durationOf(track), track, track.startBar, track.endBar)
+            progress[id] = place.sounding ? place.through : 0
         })
         return {
             playing: this.playing,
@@ -286,17 +307,100 @@ export class LoopEngine {
         if (this.playing) return
         this.startedAt = ctx.currentTime
         this.playing = true
-        this.nextBeat = this.startedAt
+        this.nextBeat = this.playhead
         this.armScheduler()
-        this.tracks.forEach((track) => this.startSource(track, 0, ctx.currentTime))
+        this.materialize()
+        this.scheduleAhead(this.playhead)
         this.onUpdate()
     }
 
+    seek(seconds: number): void {
+        const end = songSeconds(this.bpm, this.songBars)
+        this.playhead = Math.max(0, Math.min(Math.max(0, end - 0.05), seconds))
+        if (!this.playing || this.ctx == null) {
+            this.onUpdate()
+            return
+        }
+        this.startedAt = this.ctx.currentTime
+        this.nextBeat = this.playhead
+        this.tracks.forEach((track) => {
+            this.stopSources(track)
+            track.armed.clear()
+        })
+        this.scheduleAhead(this.playhead)
+        this.onUpdate()
+    }
+
+    setSongBars(bars: number): void {
+        this.songBars = Math.max(4, Math.min(400, Math.round(bars)))
+    }
+
+    setMetronomeVolume(amount: number): void {
+        this.metroVolume = Math.max(0, Math.min(1, amount))
+    }
+
+    configure(id: string, plan: {
+        bars: LoopLength
+        preGapBeats: number
+        postGapBeats: number
+        preGapMs: number
+        postGapMs: number
+        startBar: number
+        endBar: number
+        distortMix: number
+        distortPoints: DrivePoint[]
+        sections: SectionDrive[]
+    }): void {
+        this.plans.set(id, plan)
+        const track = this.tracks.get(id)
+        if (track != null) this.applyPlan(track, plan)
+    }
+
+    private plans = new Map<string, {
+        bars: LoopLength
+        preGapBeats: number
+        postGapBeats: number
+        preGapMs: number
+        postGapMs: number
+        startBar: number
+        endBar: number
+        distortMix: number
+        distortPoints: DrivePoint[]
+        sections: SectionDrive[]
+    }>()
+
+    private applyPlan(track: TrackNode, plan: {
+        bars: LoopLength
+        preGapBeats: number
+        postGapBeats: number
+        preGapMs: number
+        postGapMs: number
+        startBar: number
+        endBar: number
+        distortMix: number
+        distortPoints: DrivePoint[]
+        sections: SectionDrive[]
+    }): void {
+        track.bars = plan.bars
+        track.preGapBeats = plan.preGapBeats
+        track.postGapBeats = plan.postGapBeats
+        track.preGapMs = plan.preGapMs
+        track.postGapMs = plan.postGapMs
+        track.startBar = plan.startBar
+        track.endBar = plan.endBar
+        track.distortMix = plan.distortMix
+        track.distortPoints = plan.distortPoints
+        track.sections = plan.sections
+        track.dry.gain.value = 1 - plan.distortMix
+        track.wet.gain.value = plan.distortMix
+    }
+
     stop(): void {
+        this.playhead = this.songElapsed()
         this.playing = false
         this.monitorOff()
         this.dropTake()
-        this.tracks.forEach((track) => this.stopSource(track))
+        this.tracks.forEach((track) => this.stopSources(track))
         if (this.timer != null) {
             window.clearInterval(this.timer)
             this.timer = null
@@ -320,13 +424,18 @@ export class LoopEngine {
         this.tracks.forEach((track) => {
             if (track.bars !== 'free') {
                 track.buffer = null
-                this.stopSource(track)
+                this.stopSources(track)
+                track.armed.clear()
             }
         })
         if (this.playing && this.ctx != null) {
             this.startedAt = this.ctx.currentTime
-            this.nextBeat = this.startedAt
-            this.tracks.forEach((track) => this.startSource(track, 0, this.ctx.currentTime))
+            this.nextBeat = this.playhead
+            this.tracks.forEach((track) => {
+                this.stopSources(track)
+                track.armed.clear()
+            })
+            this.scheduleAhead(this.playhead)
         }
         this.onUpdate()
     }
@@ -341,7 +450,8 @@ export class LoopEngine {
         track.bars = bars
         track.buffer = null
         track.freeSeconds = 0
-        this.stopSource(track)
+        this.stopSources(track)
+        track.armed.clear()
         this.onUpdate()
     }
 
@@ -377,7 +487,7 @@ export class LoopEngine {
         if (this.recording != null && this.recording.id === id) this.dropTake()
         const track = this.tracks.get(id)
         if (track == null) return
-        this.stopSource(track)
+        this.stopSources(track)
         track.gain.disconnect()
         this.tracks.delete(id)
     }
@@ -468,19 +578,86 @@ export class LoopEngine {
 
     private lookahead(): void {
         const ctx = this.ctx
-        if (ctx == null || !this.playing || !this.metronome) return
+        if (ctx == null || !this.playing) return
+        const songNow = this.songElapsed()
+        if (songNow >= songSeconds(this.bpm, this.songBars)) {
+            this.stop()
+            this.playhead = 0
+            return
+        }
+        this.scheduleAhead(songNow)
+        this.shapeNow(songNow)
+        if (!this.metronome) return
         const beat = 60 / this.bpm
-        const horizon = ctx.currentTime + 0.15
+        const horizon = songNow + 0.2
         while (this.nextBeat < horizon) {
-            const index = Math.round((this.nextBeat - this.startedAt) / beat)
-            this.clickAt(this.nextBeat, ((index % 4) + 4) % 4 === 0)
+            const when = ctx.currentTime + (this.nextBeat - songNow)
+            const index = Math.round(this.nextBeat / beat)
+            this.clickAt(when, ((index % 4) + 4) % 4 === 0)
             this.nextBeat += beat
+        }
+    }
+
+    private materialize(): void {
+        const ids = new Set<string>()
+        this.plans.forEach((_plan, id) => ids.add(id))
+        this.pendingAudio.forEach((_clip, id) => ids.add(id))
+        ids.forEach((id) => { this.track(id) })
+    }
+
+    private songElapsed(): number {
+        if (!this.playing || this.ctx == null) return this.playhead
+        return Math.max(0, this.playhead + (this.ctx.currentTime - this.startedAt))
+    }
+
+    private scheduleAhead(songNow: number): void {
+        const ctx = this.ctx
+        if (ctx == null) return
+        const horizon = songNow + 0.7
+        this.tracks.forEach((track) => {
+            if (track.buffer == null) return
+            const points = schedulePoints(songNow - 0.02, horizon, this.bpm, this.durationOf(track), track, track.startBar, Math.min(track.endBar, this.songBars))
+            points.forEach((point) => {
+                if (!(point.duration > 0.02)) return
+                const key = point.songTime.toFixed(3)
+                if (track.armed.has(key)) return
+                const when = ctx.currentTime + (point.songTime - songNow)
+                if (when < ctx.currentTime - 0.05) return
+                track.armed.add(key)
+                this.fire(track, when, point.offset, point.duration)
+            })
+        })
+    }
+
+    private shapeNow(songNow: number): void {
+        this.tracks.forEach((track) => {
+            const place = placement(songNow, this.bpm, this.durationOf(track), track, track.startBar, track.endBar)
+            const drive = sectionDrive(place.bar, track.sections, driveAt(place.through, track.distortPoints))
+            if (Math.abs(drive - track.lastDrive) > 0.04) {
+                track.shaper.curve = Float32Array.from(shaperSamples(drive))
+                track.lastDrive = drive
+            }
+        })
+    }
+
+    private fire(track: TrackNode, when: number, offset: number, duration: number): void {
+        const ctx = this.ctx
+        if (ctx == null || track.buffer == null) return
+        const source = ctx.createBufferSource()
+        source.buffer = track.buffer
+        source.connect(track.dry)
+        source.connect(track.shaper)
+        const startAt = Math.max(0, Math.min(offset, Math.max(0, track.buffer.duration - 0.001)))
+        source.start(Math.max(when, ctx.currentTime), startAt, duration)
+        track.sources.push(source)
+        source.onended = () => {
+            track.sources = track.sources.filter((item) => item !== source)
         }
     }
 
     private clickAt(time: number, accent: boolean): void {
         const ctx = this.ctx
-        if (ctx == null || time < ctx.currentTime - 0.02) return
+        if (ctx == null || time < ctx.currentTime - 0.02 || this.metroVolume <= 0.001) return
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
         osc.frequency.value = accent ? 1760 : 1174
@@ -488,7 +665,8 @@ export class LoopEngine {
         gain.connect(ctx.destination)
         const start = Math.max(time, ctx.currentTime)
         gain.gain.setValueAtTime(0.0001, start)
-        gain.gain.exponentialRampToValueAtTime(accent ? 0.35 : 0.18, start + 0.004)
+        const level = this.metroVolume
+        gain.gain.exponentialRampToValueAtTime((accent ? 0.35 : 0.18) * level, start + 0.004)
         gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.05)
         osc.start(start)
         osc.stop(start + 0.06)
@@ -500,13 +678,92 @@ export class LoopEngine {
         const existing = this.tracks.get(id)
         if (existing != null) return existing
         const gain = ctx.createGain()
+        const dry = ctx.createGain()
+        const wet = ctx.createGain()
+        const shaper = ctx.createWaveShaper()
+        shaper.curve = Float32Array.from(shaperSamples(0))
+        dry.connect(gain)
+        shaper.connect(wet)
+        wet.connect(gain)
         gain.connect(ctx.destination)
+        dry.gain.value = 1
+        wet.gain.value = 0
         const bars = this.pendingLength.get(id) || 4
         this.pendingLength.delete(id)
         gain.gain.value = this.levels.has(id) ? (this.levels.get(id) as number) : 0.8
-        const created: TrackNode = { gain, source: null, buffer: null, bars, freeSeconds: 0 }
+        const created: TrackNode = {
+            gain, dry, wet, shaper,
+            sources: [],
+            armed: new Set<string>(),
+            buffer: null,
+            bars,
+            freeSeconds: 0,
+            preGapBeats: 0,
+            postGapBeats: 0,
+            preGapMs: 0,
+            postGapMs: 0,
+            startBar: 0,
+            endBar: this.songBars,
+            distortMix: 0,
+            distortPoints: [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+            sections: [],
+            lastDrive: 0,
+        }
+        const plan = this.plans.get(id)
+        if (plan != null) this.applyPlan(created, plan)
+        const pending = this.pendingAudio.get(id)
+        if (pending != null) {
+            created.buffer = this.bufferFrom(pending.samples, pending.rate)
+            if (created.bars === 'free') created.freeSeconds = created.buffer.duration
+            this.pendingAudio.delete(id)
+        }
         this.tracks.set(id, created)
         return created
+    }
+
+    private pendingAudio = new Map<string, { samples: Float32Array, rate: number }>()
+
+    private bufferFrom(samples: Float32Array, rate: number): AudioBuffer {
+        const ctx = this.ctx
+        if (ctx == null) throw new Error('No audio clock')
+        const shaped = rate === ctx.sampleRate ? samples : resampleLinear(samples, rate, ctx.sampleRate)
+        const buffer = ctx.createBuffer(1, shaped.length, ctx.sampleRate)
+        buffer.getChannelData(0).set(shaped)
+        return buffer
+    }
+
+    copySamples(id: string): { samples: Float32Array, rate: number } | null {
+        const pending = this.pendingAudio.get(id)
+        if (pending != null) return { samples: pending.samples.slice(), rate: pending.rate }
+        const track = this.tracks.get(id)
+        const ctx = this.ctx
+        if (track == null || track.buffer == null || ctx == null) return null
+        return { samples: Float32Array.from(track.buffer.getChannelData(0)), rate: ctx.sampleRate }
+    }
+
+    loadSamples(id: string, samples: Float32Array, rate: number): void {
+        this.pendingAudio.set(id, { samples, rate })
+        const track = this.tracks.get(id)
+        if (track == null || this.ctx == null) return
+        track.buffer = this.bufferFrom(samples, rate)
+        if (track.bars === 'free') track.freeSeconds = track.buffer.duration
+        this.pendingAudio.delete(id)
+    }
+
+    retainTracks(ids: string[]): void {
+        Array.from(this.tracks.keys()).forEach((id) => {
+            if (ids.indexOf(id) < 0) this.removeTrack(id)
+        })
+    }
+
+    clearSongAudio(): void {
+        this.stop()
+        this.pendingAudio.clear()
+        this.tracks.forEach((track) => {
+            this.stopSources(track)
+            track.buffer = null
+            track.freeSeconds = 0
+        })
     }
 
     private durationOf(track: TrackNode): number {
@@ -557,41 +814,27 @@ export class LoopEngine {
         track.buffer = buffer
         if (track.bars === 'free') track.freeSeconds = mixed.length / ctx.sampleRate
         this.failed = this.tuned ? '' : 'Auto-tune is off in this browser. The loop is still your voice.'
+        this.stopSources(track)
+        track.armed.clear()
         const trackId = take.id
         // Start on the next turn. Doing it inside the worklet message can
         // schedule the take in a render quantum that already passed, so the
         // loop stays silent even though the buffer has the voice in it.
         Promise.resolve().then(() => {
-            const live = this.ctx
             const playing = this.tracks.get(trackId)
-            if (!this.playing || live == null || playing == null || playing.buffer == null) return
-            const duration = playing.buffer.duration
-            const elapsed = live.currentTime - this.startedAt
-            const offset = ((elapsed % duration) + duration) % duration
-            this.startSource(playing, offset, live.currentTime)
+            if (!this.playing || playing == null || playing.buffer == null) return
+            this.scheduleAhead(this.songElapsed())
             this.onUpdate()
         })
         this.onUpdate()
     }
 
-    private startSource(track: TrackNode, offset: number, when: number): void {
-        const ctx = this.ctx
-        if (ctx == null || track.buffer == null) return
-        this.stopSource(track)
-        const source = ctx.createBufferSource()
-        source.buffer = track.buffer
-        source.loop = true
-        source.connect(track.gain)
-        const startAt = Math.max(0, Math.min(offset, Math.max(0, track.buffer.duration - 0.001)))
-        source.start(when, startAt)
-        track.source = source
-    }
-
-    private stopSource(track: TrackNode): void {
-        if (track.source == null) return
-        try { track.source.stop() } catch (err) { /* already stopped */ }
-        track.source.disconnect()
-        track.source = null
+    private stopSources(track: TrackNode): void {
+        track.sources.forEach((source) => {
+            try { source.stop() } catch (err) { /* already stopped */ }
+            try { source.disconnect() } catch (err) { /* already disconnected */ }
+        })
+        track.sources = []
     }
 
     dispose(): void {
@@ -631,6 +874,21 @@ function mix(existing: AudioBuffer, incoming: Float32Array): Float32Array {
     }
     if (peak > 1) {
         for (let i = 0; i < out.length; i++) out[i] /= peak
+    }
+    return out
+}
+
+function resampleLinear(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+    if (!(fromRate > 0) || fromRate === toRate) return samples
+    const length = Math.max(1, Math.round(samples.length * toRate / fromRate))
+    const out = new Float32Array(length)
+    for (let i = 0; i < length; i++) {
+        const pos = i * fromRate / toRate
+        const left = Math.floor(pos)
+        const frac = pos - left
+        const a = samples[Math.min(samples.length - 1, left)] || 0
+        const b = samples[Math.min(samples.length - 1, left + 1)] || 0
+        out[i] = a + (b - a) * frac
     }
     return out
 }
