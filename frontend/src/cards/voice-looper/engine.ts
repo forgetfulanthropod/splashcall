@@ -944,12 +944,12 @@ export class LoopEngine {
             this.takeReport = { rms: level, samples: chosen.length, via }
             if (chosen.length < ctx.sampleRate * 0.15) {
                 this.failed = 'Hold the recording a little longer.'
-                this.onUpdate()
+                this.stop()
                 return
             }
             if (level < 0.002) {
                 this.failed = 'That take was silent. Allow the microphone and try again.'
-                this.onUpdate()
+                this.stop()
                 return
             }
             this.commitTake(take, chosen, ctx)
