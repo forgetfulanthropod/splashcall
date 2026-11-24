@@ -81,6 +81,12 @@ export class LoopEngine {
     private wave = new Float32Array(1024)
     private inputTrim = 1
     private mic: MediaStream | null = null
+    private micPromise: Promise<MediaStream> | null = null
+    private captureMode: 'worklet' | 'script' | 'file' = 'worklet'
+    private fileRecorder: MediaRecorder | null = null
+    private fileParts: Blob[] = []
+    private takeReport: { rms: number, samples: number, via: string } | null = null
+    private recordWall = 0
     private tracks = new Map<string, TrackNode>()
     private playing = false
     private startedAt = 0
@@ -115,6 +121,32 @@ export class LoopEngine {
     prime(): void {
         const ctx = this.context()
         if (ctx != null && needsAudioResume(ctx.state)) void ctx.resume()
+    }
+
+    /**
+     * Start the microphone request in the same turn as the tap.
+     * Android Chrome ignores getUserMedia if it is called after an await.
+     */
+    beginCapture(): void {
+        this.prime()
+        if (this.mic != null || this.micPromise != null) return
+        if (typeof navigator === 'undefined' || navigator.mediaDevices == null || navigator.mediaDevices.getUserMedia == null) {
+            this.failed = 'This browser has no microphone. Open the looper in Chrome or the SplashCall app.'
+            return
+        }
+        try {
+            this.micPromise = navigator.mediaDevices.getUserMedia({
+                audio: micAudioConstraints(),
+                video: false,
+            })
+        } catch (err) {
+            this.failed = 'The microphone is blocked. Allow it to record a loop.'
+            this.micPromise = null
+        }
+    }
+
+    lastTake(): { rms: number, samples: number, via: string } | null {
+        return this.takeReport
     }
 
     /** What the microphone is sending, measured before auto-tune. */
@@ -179,7 +211,7 @@ export class LoopEngine {
             this.failed = 'This browser cannot play a loop.'
             throw new Error(this.failed)
         }
-        if (needsAudioResume(ctx.state)) await ctx.resume()
+        void ctx.resume()
         const monitor = ctx.createGain()
         monitor.gain.value = 0
         monitor.connect(ctx.destination)
@@ -188,12 +220,16 @@ export class LoopEngine {
             this.failed = 'This browser has no microphone. Open the looper in Chrome or the SplashCall app.'
             throw new Error(this.failed)
         }
+        const pending = this.micPromise
+        this.micPromise = null
         let stream: MediaStream
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                audio: micAudioConstraints(),
-                video: false,
-            })
+            stream = pending != null
+                ? await pending
+                : await navigator.mediaDevices.getUserMedia({
+                    audio: micAudioConstraints(),
+                    video: false,
+                })
         } catch (err) {
             this.failed = 'The microphone is blocked. Allow it to record a loop.'
             throw new Error(this.failed)
@@ -211,7 +247,7 @@ export class LoopEngine {
         this.inputGain = inputGain
         this.inputAnalyser = analyser
         const meterKeep = ctx.createGain()
-        meterKeep.gain.value = 0.001
+        meterKeep.gain.value = 0.02
         analyser.connect(meterKeep)
         meterKeep.connect(ctx.destination)
         const sink = ctx.createMediaStreamDestination()
@@ -235,10 +271,12 @@ export class LoopEngine {
                 node.connect(sink)
                 this.tuner = node
                 this.tuned = true
+                this.captureMode = 'worklet'
                 this.failed = ''
                 return
             } catch (err) {
                 this.tuned = false
+                console.info('looper worklet failed', err instanceof Error ? err.message : err)
             } finally {
                 URL.revokeObjectURL(url)
             }
@@ -249,8 +287,9 @@ export class LoopEngine {
     private attachDryCapture(ctx: AudioContext, source: AudioNode, monitor: GainNode, sink: MediaStreamAudioDestinationNode): void {
         const factory = (ctx as AudioContext & { createScriptProcessor?: (size: number, inputs: number, outputs: number) => ScriptProcessorNode }).createScriptProcessor
         if (factory == null) {
-            this.failed = 'This browser cannot record a loop.'
-            throw new Error(this.failed)
+            this.captureMode = 'file'
+            this.failed = ''
+            return
         }
         const processor = factory.call(ctx, 2048, 1, 1)
         processor.onaudioprocess = (event: AudioProcessingEvent) => {
@@ -266,12 +305,19 @@ export class LoopEngine {
         processor.connect(sink)
         this.processor = processor
         this.tuned = false
+        this.captureMode = 'script'
         this.failed = 'Auto-tune is off in this browser. The loop is still your voice.'
     }
 
     snapshot(): EngineSnapshot {
         if (this.recording != null && this.ctx != null && this.ctx.currentTime >= this.recording.recordAt) {
             this.recording.phase = 'recording'
+            this.startFileRecorder()
+        }
+        if (this.recording != null && this.recording.received === 0 && this.recordWall > 0 && typeof performance !== 'undefined' && performance.now() - this.recordWall > 8000) {
+            this.failed = this.captureMode === 'file'
+                ? 'Still waiting on the microphone. Tap Rec again if nothing is saved.'
+                : 'No audio arrived from the microphone. Tap Rec again.'
         }
         const elapsed = this.songElapsed()
         const progress: Record<string, number> = {}
@@ -493,7 +539,7 @@ export class LoopEngine {
     }
 
     async record(id: string, overdub: boolean, settings: TuneSettings, bars: LoopLength): Promise<void> {
-        this.prime()
+        this.beginCapture()
         await this.ensure()
         const ctx = this.ctx
         if (ctx == null) return
@@ -520,13 +566,13 @@ export class LoopEngine {
         const bar = barSeconds(this.bpm)
         const downbeat = recordDownbeat(ctx.currentTime, this.playing, this.startedAt, bar, this.countIn)
         if (!this.playing) {
-            this.startedAt = downbeat
+            this.playhead = 0
+            this.startedAt = ctx.currentTime
             this.playing = true
-            this.nextBeat = downbeat
+            this.nextBeat = 0
             this.armScheduler()
-            this.tracks.forEach((track) => {
-                if (track.buffer != null) this.startSource(track, 0, downbeat)
-            })
+            this.materialize()
+            this.scheduleAhead(0)
         }
         if (this.countIn) this.scheduleCountIn(downbeat, bar)
         const free = bars === 'free' && !(overdub && node.buffer != null)
@@ -547,11 +593,84 @@ export class LoopEngine {
             phase: delaySamples > ctx.sampleRate * 0.03 ? 'count-in' : 'recording',
             recordAt: downbeat,
         }
+        this.recordWall = typeof performance !== 'undefined' ? performance.now() : 0
         if (this.monitor) this.monitor.gain.value = 0.9
-        if (this.tuner != null) {
+        if (this.tuner != null && this.captureMode === 'worklet') {
             this.tuner.port.postMessage({ type: 'record', on: true, delaySamples })
         }
+        if (this.recording.phase === 'recording' || this.captureMode === 'file') this.startFileRecorder()
+        if (!free && seconds > 0) {
+            const waitMs = Math.max(500, ((downbeat - ctx.currentTime) + seconds + 0.35) * 1000)
+            const takeId = id
+            window.setTimeout(() => {
+                if (this.recording != null && this.recording.id === takeId) this.finish(false)
+            }, waitMs)
+        }
         this.onUpdate()
+    }
+
+    private startFileRecorder(): void {
+        if (this.fileRecorder != null || this.mic == null || typeof MediaRecorder === 'undefined') return
+        let recorder: MediaRecorder
+        try {
+            recorder = new MediaRecorder(this.mic)
+        } catch (err) {
+            this.failed = 'This browser could not open a recorder.'
+            return
+        }
+        this.fileParts = []
+        recorder.ondataavailable = (event: BlobEvent) => {
+            if (event.data != null && event.data.size > 0) this.fileParts.push(event.data)
+        }
+        try {
+            recorder.start(250)
+        } catch (err) {
+            this.failed = 'This browser could not start the recorder.'
+            return
+        }
+        this.fileRecorder = recorder
+    }
+
+    private discardFile(): void {
+        const recorder = this.fileRecorder
+        this.fileRecorder = null
+        this.fileParts = []
+        if (recorder != null && recorder.state !== 'inactive') {
+            try { recorder.stop() } catch (err) { /* already stopped */ }
+        }
+    }
+
+    private stopFileRecorder(): Promise<Float32Array | null> {
+        const recorder = this.fileRecorder
+        const ctx = this.ctx
+        this.fileRecorder = null
+        if (recorder == null || ctx == null) return Promise.resolve(null)
+        const parts = this.fileParts
+        return new Promise((resolve) => {
+            let settled = false
+            const done = (samples: Float32Array | null) => {
+                if (settled) return
+                settled = true
+                resolve(samples)
+            }
+            const timer = window.setTimeout(() => done(null), 1500)
+            recorder.onstop = () => {
+                window.clearTimeout(timer)
+                const blob = new Blob(parts, { type: recorder.mimeType || 'audio/webm' })
+                blob.arrayBuffer().then((bytes) => ctx.decodeAudioData(bytes.slice(0))).then((audio) => {
+                    done(audio.getChannelData(0).slice())
+                }).catch(() => done(null))
+            }
+            if (recorder.state === 'inactive') {
+                window.clearTimeout(timer)
+                done(null)
+                return
+            }
+            try { recorder.stop() } catch (err) {
+                window.clearTimeout(timer)
+                done(null)
+            }
+        })
     }
 
     private scheduleCountIn(downbeat: number, bar: number): void {
@@ -563,6 +682,11 @@ export class LoopEngine {
 
     private dropTake(): void {
         if (this.tuner != null) this.tuner.port.postMessage({ type: 'record', on: false, delaySamples: 0 })
+        if (this.fileRecorder != null && this.fileRecorder.state !== 'inactive') {
+            try { this.fileRecorder.stop() } catch (err) { /* already stopped */ }
+        }
+        this.fileRecorder = null
+        this.fileParts = []
         this.recording = null
         this.monitorOff()
     }
@@ -786,40 +910,68 @@ export class LoopEngine {
         this.finish(false)
     }
 
+    private finishing = false
+
     private finish(freeStop: boolean): void {
         const take = this.recording
         const ctx = this.ctx
-        if (take == null || ctx == null) return
+        if (take == null || ctx == null || this.finishing) return
         if (take.free && !freeStop) return
+        this.finishing = true
         if (this.tuner != null) this.tuner.port.postMessage({ type: 'record', on: false, delaySamples: 0 })
-        const length = take.free ? take.received : take.need
         this.recording = null
         this.monitorOff()
-        if (length < ctx.sampleRate * 0.15) {
-            this.failed = 'Hold the recording a little longer.'
-            this.onUpdate()
+        const graph = take.received > 0 ? join(take.chunks, take.received) : new Float32Array(0)
+        if (rms(graph) >= 0.002) {
+            this.discardFile()
+            this.finishing = false
+            const level = rms(graph)
+            console.info('looper take', this.captureMode, 'rms', level.toFixed(4), 'samples', graph.length)
+            this.takeReport = { rms: level, samples: graph.length, via: this.captureMode }
+            this.commitTake(take, graph, ctx)
             return
         }
-        const fresh = join(take.chunks, length)
-        if (rms(fresh) < 0.002) {
-            this.failed = 'That take was silent. Allow the microphone and try again.'
+        void this.stopFileRecorder().then((fileSamples) => {
+            this.finishing = false
+            let chosen = graph
+            let via = this.captureMode
+            if (rms(graph) < 0.002 && fileSamples != null && rms(fileSamples) >= 0.002) {
+                chosen = fileSamples
+                via = 'file'
+            }
+            const level = rms(chosen)
+            console.info('looper take', via, 'rms', level.toFixed(4), 'samples', chosen.length)
+            this.takeReport = { rms: level, samples: chosen.length, via }
+            if (chosen.length < ctx.sampleRate * 0.15) {
+                this.failed = 'Hold the recording a little longer.'
+                this.stop()
+                return
+            }
+            if (level < 0.002) {
+                this.failed = 'That take was silent. Allow the microphone and try again.'
+                this.stop()
+                return
+            }
+            this.commitTake(take, chosen, ctx)
+        }).catch(() => {
+            this.finishing = false
+            this.failed = 'The recording could not be saved.'
             this.onUpdate()
-            return
-        }
+        })
+    }
+
+    private commitTake(take: Take, chosen: Float32Array, ctx: AudioContext): void {
         const track = this.track(take.id)
         if (track == null) return
-        const mixed = take.overdub && track.buffer != null ? mix(track.buffer, fresh) : fresh
+        const mixed = take.overdub && track.buffer != null ? mix(track.buffer, chosen) : chosen
         const buffer = ctx.createBuffer(1, mixed.length, ctx.sampleRate)
         buffer.getChannelData(0).set(mixed)
         track.buffer = buffer
-        if (track.bars === 'free') track.freeSeconds = mixed.length / ctx.sampleRate
-        this.failed = this.tuned ? '' : 'Auto-tune is off in this browser. The loop is still your voice.'
+        if (track.bars === 'free' || take.free) track.freeSeconds = mixed.length / ctx.sampleRate
+        this.failed = ''
         this.stopSources(track)
         track.armed.clear()
         const trackId = take.id
-        // Start on the next turn. Doing it inside the worklet message can
-        // schedule the take in a render quantum that already passed, so the
-        // loop stays silent even though the buffer has the voice in it.
         Promise.resolve().then(() => {
             const playing = this.tracks.get(trackId)
             if (!this.playing || playing == null || playing.buffer == null) return

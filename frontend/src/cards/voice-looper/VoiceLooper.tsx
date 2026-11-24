@@ -2,10 +2,12 @@ import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
+import { imagineWandApiUrl } from '../../environment'
 import { bounce, saveBytes } from './exportMix'
 import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
 import PlaySheet, { SheetTab } from './PlaySheet'
 import { chordAt, defaultSong, defaultTrack, freshLibrary, hashSamples, Library, parseProgression, pushRevision, restoreRevision, Song, SongTrack } from './song'
+import { analyzeTake, arrangementToTracks, renderPart, wandFailureMessage } from './wand'
 import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
 
@@ -35,6 +37,7 @@ export default function VoiceLooper(): JSX.Element {
     const [sheetOpen, setSheetOpen] = useState(false)
     const [tab, setTab] = useState<SheetTab>('Song')
     const [note, setNote] = useState('')
+    const [takeLine, setTakeLine] = useState('')
     const inputTrim = song.inputTrim
     const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
@@ -97,6 +100,10 @@ export default function VoiceLooper(): JSX.Element {
                 })
                 setAudio(flags)
                 setClock(current.snapshot())
+                const report = current.lastTake()
+                if (report != null && report.rms >= 0.002) {
+                    setTakeLine('Saved ' + report.via + ' take · RMS ' + report.rms.toFixed(3))
+                }
                 const message = current.error()
                 if (message.length > 0) setError(message)
             })
@@ -293,13 +300,14 @@ export default function VoiceLooper(): JSX.Element {
     }
 
     async function onRecord(track: Track, overdub: boolean): Promise<void> {
+        const eng = engine()
+        eng.beginCapture()
         setError(null)
-        engine().prime()
-        engine().setCountIn(countIn)
+        eng.setCountIn(countIn)
         try {
-            await engine().record(track.id, overdub, tuneOf(track), track.bars)
-            setClock(engine().snapshot())
-            const message = engine().error()
+            await eng.record(track.id, overdub, tuneOf(track), track.bars)
+            setClock(eng.snapshot())
+            const message = eng.error()
             if (message.length > 0) setError(message)
         } catch (err) {
             setError(messageFrom(err))
@@ -321,6 +329,64 @@ export default function VoiceLooper(): JSX.Element {
             name: 'Track ' + (current.length + 1),
             endBar: song.songBars,
         })]))
+    }
+
+    async function onWand(): Promise<void> {
+        const recorded = song.tracks.find((track) => !track.wand && (audio[track.id] || track.audioId !== ''))
+        if (recorded == null) {
+            setError('Record a track first. The wand builds around it.')
+            return
+        }
+        const live = engine().copySamples(recorded.id)
+        const clip = live != null ? live : recorded.audioId !== '' ? await recallAudio(recorded.audioId) : null
+        if (clip == null) {
+            setError('Record a track first. The wand builds around it.')
+            return
+        }
+        const features = analyzeTake(clip.samples, clip.rate, song.bpm)
+        setError(null)
+        setNote('Asking for an arrangement…')
+        try {
+            const response = await fetch(imagineWandApiUrl(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ features }),
+            })
+            const body = await response.json() as { error?: string, arrangement?: unknown, mock?: boolean }
+            if (response.status === 403 || body.error === 'Magic wand needs xAI credits') {
+                setError('Magic wand needs xAI credits')
+                setNote('')
+                return
+            }
+            if (!response.ok || body.arrangement == null) {
+                setError(body.error || wandFailureMessage(response.status))
+                setNote('')
+                return
+            }
+            const built = arrangementToTracks(body.arrangement, songRef.current.tracks, Date.now())
+            const added = built.tracks.filter((track) => track.wand)
+            added.forEach((track, index) => {
+                const part = built.arrangement.parts[index]
+                if (part == null) return
+                engine().loadSamples(track.id, renderPart(part, song.bpm, 44100), 44100)
+            })
+            const chords = parseProgression(built.arrangement.chords.join(' '))
+            updateActive((current) => ({
+                ...current,
+                revisions: pushRevision(current, 'Before magic wand', Date.now()),
+                chords: chords.length > 0 ? chords : current.chords,
+                barsEach: built.arrangement.barsEach,
+                tracks: built.tracks,
+            }))
+            setNote(body.mock ? 'Practice arrangement. Your recording is unchanged.' : 'Added parts around your recording.')
+        } catch (err) {
+            setError('Magic wand could not build an arrangement. Your recording is still here.')
+            setNote('')
+        }
+    }
+
+    function removeWand(): void {
+        updateActive((current) => ({ ...current, tracks: current.tracks.filter((track) => !track.wand) }))
     }
 
     async function exportSong(preferWav: boolean): Promise<void> {
@@ -387,9 +453,21 @@ export default function VoiceLooper(): JSX.Element {
                 <span>Beat {masterBeat(clock.elapsed, bpm)}</span>
                 <span>{masterLeft(clock.elapsed, bpm).toFixed(1)}s</span>
             </ProgressMeta>
-            {error != null && <ErrorText role="alert">{error}</ErrorText>}
+            {(error != null || clock.phase != null || takeLine !== '') && <ErrorText role="alert">
+                {error != null
+                    ? error
+                    : clock.phase === 'count-in'
+                        ? 'Count-in…'
+                        : clock.phase === 'recording'
+                            ? (tracks.find((item) => item.id === clock.recordId)?.bars === 'free' ? 'Recording… tap Rec again to loop it.' : 'Recording…')
+                            : takeLine}
+            </ErrorText>}
         </Header>
         <List>
+            {tracks[0] != null && !tracks.some((item) => audio[item.id] || item.audioId !== '') &&
+                <Add type="button" id="VoiceLooperBigRec" onClick={() => onRecord(tracks[0], false)}>Record</Add>}
+            <Add type="button" id="VoiceLooperWand" onClick={() => { void onWand() }}>Magic wand</Add>
+            {tracks.some((item) => item.wand) && <Add type="button" onClick={removeWand}>Remove wand tracks</Add>}
             {tracks.map((track) => {
                 const recording = clock.recordId === track.id
                 return <Row key={track.id} id={'loop-track-' + track.id}>
@@ -475,7 +553,7 @@ export default function VoiceLooper(): JSX.Element {
                     <MeterBar key={bar} $on={level.rms > 0.012 * (bar + 1)} $hot={level.hearing} />
                 )}
             </MeterButton>
-            {clock.phase === 'recording' && !level.hearing &&
+            {clock.phase === 'recording' && !level.hearing && clock.elapsed > 1.2 &&
                 <MeterHint role="status">{error != null && error.toLowerCase().indexOf('microphone') >= 0 ? 'Mic blocked' : 'Can\'t hear you'}</MeterHint>}
         </PlayBar>
         {sheetOpen && <PlaySheet

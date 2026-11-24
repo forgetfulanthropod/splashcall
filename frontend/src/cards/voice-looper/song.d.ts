@@ -22,6 +22,7 @@ export type SongTrack = {
     muted: boolean
     bars: LoopLength
     audioId: string
+    wand?: boolean
     preGapBeats: number
     postGapBeats: number
     preGapMs: number
