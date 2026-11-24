@@ -20,6 +20,10 @@ export function imagineWorldApiUrl(): string {
     return imagineEndpoint('/api/imagine-world')
 }
 
+export function imagineWandApiUrl(): string {
+    return imagineEndpoint('/api/imagine-wand')
+}
+
 function imagineEndpoint(path: string): string {
     const configured = process.env.REACT_APP_IMAGINE_URL
     if (configured != null && configured.trim() !== '') {

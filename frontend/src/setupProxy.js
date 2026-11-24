@@ -10,7 +10,7 @@ const TARGET_PORT = Number(process.env.IMAGINE_PORT || 8787)
 function setup(app) {
     app.use(function (req, res, next) {
         const pathOnly = String(req.originalUrl || req.url || '').split('?')[0]
-        if (pathOnly !== '/api/imagine' && pathOnly !== '/api/imagine-world') {
+        if (pathOnly !== '/api/imagine' && pathOnly !== '/api/imagine-world' && pathOnly !== '/api/imagine-wand') {
             next()
             return
         }

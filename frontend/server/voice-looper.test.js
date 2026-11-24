@@ -12,6 +12,9 @@ const {
 } = require('../src/cards/voice-looper/theory')
 const { dbFromRms, micAudioConstraints, needsAudioResume } = require('../src/cards/voice-looper/capture')
 const { encodeWav } = require('../src/cards/voice-looper/exportMix')
+const { arrangementToTracks, renderPart, wandFailureMessage } = require('../src/cards/voice-looper/wand')
+const { createArrangement } = require('../server/wand')
+const { defaultTrack, freshLibrary } = require('../src/cards/voice-looper/song')
 const {
     barsForMinutes,
     chordAt,
@@ -143,6 +146,47 @@ test('a song round-trips and a restore keeps the previous take', function () {
     assert.equal(restored.tracks[0].name, 'Vocals')
     assert.ok(restored.revisions.some((revision) => revision.label === 'Before restore'))
     assert.equal(migrate(null).songs.length, 1)
+})
+
+test('a new song starts with one empty track', function () {
+    const song = freshLibrary().songs[0]
+    assert.equal(song.tracks.length, 1)
+    assert.equal(song.tracks[0].bars, 'free')
+    assert.equal(song.tracks[0].audioId, '')
+    assert.equal(song.countIn, false)
+})
+
+test('the wand adds parts and leaves the recording in place', function () {
+    const user = [defaultTrack({ id: 'vocals', name: 'My voice', audioId: 'take-1' })]
+    const built = arrangementToTracks({
+        chords: ['C', 'G', 'Am', 'F'],
+        barsEach: 2,
+        parts: [
+            { name: 'Bass', kind: 'bass', notes: ['C2', 'G2'], startBar: 0, endBar: 8 },
+            { name: 'Drums', kind: 'drums', pattern: ['kick', 'hat'], startBar: 0, endBar: 8 },
+        ],
+    }, user, 9)
+    assert.equal(built.tracks[0].id, 'vocals')
+    assert.equal(built.tracks[0].audioId, 'take-1')
+    assert.equal(built.tracks[0].wand, false)
+    assert.equal(built.tracks.filter((track) => track.wand).length, 2)
+    const bass = renderPart(built.arrangement.parts[0], 90, 8000)
+    assert.ok(bass.length > 1000)
+    let energy = 0
+    for (let i = 0; i < bass.length; i += 10) energy += bass[i] * bass[i]
+    assert.ok(energy > 0)
+    assert.equal(wandFailureMessage(403), 'Magic wand needs xAI credits')
+})
+
+test('a 403 from xAI is named instead of a generic failure', async function () {
+    const result = await createArrangement({ bpm: 90, keyName: 'C', rms: 0.2 }, {
+        apiKey: 'test-key',
+        fetchImpl: async function () {
+            return { status: 403, ok: false, json: async function () { return {} } }
+        },
+    })
+    assert.equal(result.status, 403)
+    assert.equal(result.body.error, 'Magic wand needs xAI credits')
 })
 
 test('a WAV bounce starts with a RIFF header', function () {

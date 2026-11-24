@@ -220,6 +220,7 @@ function defaultTrack(partial) {
         muted: Boolean(seed.muted),
         bars: seed.bars === 'free' || seed.bars === 1 || seed.bars === 2 || seed.bars === 4 || seed.bars === 8 ? seed.bars : 4,
         audioId: typeof seed.audioId === 'string' ? seed.audioId : '',
+        wand: Boolean(seed.wand),
         preGapBeats: clamp(seed.preGapBeats, 0, 16),
         postGapBeats: clamp(seed.postGapBeats, 0, 16),
         preGapMs: clamp(seed.preGapMs, 0, 2000),
@@ -240,13 +241,10 @@ function defaultTrack(partial) {
 
 function defaultSong(partial) {
     const seed = partial || {}
-    const tracks = Array.isArray(seed.tracks) && seed.tracks.length
+        const tracks = Array.isArray(seed.tracks) && seed.tracks.length
         ? seed.tracks.map(defaultTrack)
         : [
-            defaultTrack({ id: 'vocals', name: 'Vocals', strength: 75, bars: 4 }),
-            defaultTrack({ id: 'harmony', name: 'Harmony', strength: 90, bars: 2 }),
-            defaultTrack({ id: 'beatbox', name: 'Beatbox', strength: 0, bars: 1, volume: 85 }),
-            defaultTrack({ id: 'bass', name: 'Bass', strength: 55, bars: 8 }),
+            defaultTrack({ id: 'track-1', name: 'Track 1', strength: 0, bars: 'free', endBar: 16 }),
         ]
     return {
         id: seed.id || 'song',
@@ -254,7 +252,7 @@ function defaultSong(partial) {
         updated: Number.isFinite(seed.updated) ? seed.updated : 0,
         bpm: clamp(seed.bpm == null ? 90 : seed.bpm, 40, 200),
         songBars: clamp(seed.songBars == null ? 32 : seed.songBars, MIN_SONG_BARS, MAX_SONG_BARS),
-        countIn: seed.countIn !== false,
+        countIn: seed.countIn === true,
         metronome: Boolean(seed.metronome),
         metronomeVolume: clamp(seed.metronomeVolume == null ? 70 : seed.metronomeVolume, 0, 100),
         inputTrim: clamp(seed.inputTrim == null ? 100 : seed.inputTrim, 0, 200),
