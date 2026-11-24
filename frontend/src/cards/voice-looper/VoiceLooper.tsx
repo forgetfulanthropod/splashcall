@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
-import { EngineSnapshot, LoopEngine, LoopLength, TuneSettings } from './engine'
+import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
 
 const SCALES: ScaleName[] = ['Major', 'Minor', 'Dorian', 'Mixolydian', 'Pentatonic']
@@ -42,6 +42,10 @@ export default function VoiceLooper(): JSX.Element {
     const [sheetId, setSheetId] = useState<string | null>(null)
     const [editing, setEditing] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
+    const [level, setLevel] = useState<MicLevel>({ rms: 0, peak: 0, db: -96, clipped: false, hearing: false, ready: false })
+    const [meterOpen, setMeterOpen] = useState(false)
+    const [inputTrim, setInputTrim] = useState(100)
+    const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
     const tracksRef = useRef(tracks)
     const suppress = useRef(false)
@@ -70,13 +74,21 @@ export default function VoiceLooper(): JSX.Element {
         const loop = engine()
         let frame = 0
         let last = ''
-        const tick = (): void => {
+        let levelAt = 0
+        const tick = (now: number): void => {
             const pos = loop.snapshot()
             const key = (pos.playing ? '1' : '0') + '|' + (pos.recordId || '') + '|' + (pos.phase || '') + '|' + pos.elapsed.toFixed(1)
             if (key !== last) {
                 last = key
                 setClock(pos)
             }
+            const heard = loop.level()
+            if (now - levelAt > 70) {
+                levelAt = now
+                setLevel(heard)
+            }
+            const canvas = waveRef.current
+            if (canvas != null) drawWave(canvas, loop.waveform())
             frame = requestAnimationFrame(tick)
         }
         frame = requestAnimationFrame(tick)
@@ -215,10 +227,6 @@ export default function VoiceLooper(): JSX.Element {
             <Title>Voice Looper</Title>
             <Subtitle>On a call with {peer} · 4/4 · {bpm} BPM</Subtitle>
             <Transport>
-                <Round type="button" id="VoiceLooperStop" aria-label="Stop" onClick={onStop}><Square /></Round>
-                <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
-                    {clock.playing ? <Pause /> : <Triangle />}
-                </Play>
                 <Pill type="button" $on={metronome} onClick={() => {
                     const next = !metronome
                     setMetronome(next)
@@ -317,6 +325,51 @@ export default function VoiceLooper(): JSX.Element {
             })}
             <Add type="button" id="VoiceLooperAdd" onClick={addTrack}>Add track</Add>
         </List>
+        <PlayBar>
+            <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
+                {clock.playing ? <Pause /> : <Triangle />}
+            </Play>
+            <Round type="button" id="VoiceLooperStop" aria-label="Stop" onClick={onStop}><Square /></Round>
+            <MeterButton
+                type="button"
+                id="VoiceLooperMeter"
+                aria-expanded={meterOpen}
+                aria-label={level.ready ? (level.hearing ? 'Microphone hears you' : 'Can\'t hear you') : 'Microphone level'}
+                onClick={() => setMeterOpen((open) => !open)}
+            >
+                {[0, 1, 2, 3].map((bar) =>
+                    <MeterBar key={bar} $on={level.rms > 0.012 * (bar + 1)} $hot={level.hearing} />
+                )}
+            </MeterButton>
+            {clock.phase === 'recording' && !level.hearing &&
+                <MeterHint role="status">{error != null && error.toLowerCase().indexOf('microphone') >= 0 ? 'Mic blocked' : 'Can\'t hear you'}</MeterHint>}
+        </PlayBar>
+        {meterOpen && <MeterSheet role="dialog" aria-label="Microphone">
+            <Handle type="button" aria-label="Close microphone view" onClick={() => setMeterOpen(false)} />
+            <MeterTitle>Microphone</MeterTitle>
+            <WaveCanvas ref={waveRef} width={640} height={120} />
+            <MeterReadout>
+                <span>RMS {level.db.toFixed(0)} dB</span>
+                <span>Peak {(level.peak > 0 ? Math.max(-96, 20 * Math.log(level.peak) / Math.LN10) : -96).toFixed(0)} dB</span>
+                <Clip $on={level.clipped}>CLIP</Clip>
+            </MeterReadout>
+            {!level.ready && <MeterHint>Tap Rec, then allow the microphone.</MeterHint>}
+            {level.ready && !level.hearing && <MeterHint>Can't hear you. Move closer or raise the input.</MeterHint>}
+            {error != null && <ErrorText role="alert">{error}</ErrorText>}
+            <FieldLabel>Input {inputTrim}%</FieldLabel>
+            <Range
+                aria-label="Input gain"
+                type="range"
+                min={0}
+                max={200}
+                value={inputTrim}
+                onChange={(event) => {
+                    const next = Number(event.target.value)
+                    setInputTrim(next)
+                    engine().setInputTrim(next / 100)
+                }}
+            />
+        </MeterSheet>}
         {sheet != null && <SheetBackdrop onClick={() => setSheetId(null)}>
             <Sheet role="dialog" aria-label={'Auto-tune ' + sheet.name} onClick={(event) => event.stopPropagation()}>
                 <SheetHead>
@@ -359,6 +412,27 @@ export default function VoiceLooper(): JSX.Element {
             </Sheet>
         </SheetBackdrop>}
     </Root>
+}
+
+function drawWave(canvas: HTMLCanvasElement, wave: Float32Array): void {
+    const ctx = canvas.getContext('2d')
+    if (ctx == null) return
+    const width = canvas.width
+    const height = canvas.height
+    ctx.clearRect(0, 0, width, height)
+    ctx.fillStyle = '#e7edf3'
+    ctx.fillRect(0, 0, width, height)
+    ctx.strokeStyle = '#2f7a45'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    const step = Math.max(1, Math.floor(wave.length / width))
+    for (let x = 0; x < width; x++) {
+        const sample = wave[Math.min(wave.length - 1, x * step)] || 0
+        const y = height / 2 - sample * (height * 0.45)
+        if (x === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
 }
 
 function masterProgress(elapsed: number, bpm: number): number {
@@ -418,6 +492,99 @@ function cleanRemote(track: Track): Track {
 
 const raised = '0.22rem 0.22rem 0.45rem rgb(195 193 198 / 90%), -0.12rem -0.12rem 0.35rem #fff'
 const inset = 'inset 0.15rem 0.15rem 0.35rem rgb(195 193 198 / 90%), inset -0.1rem -0.1rem 0.3rem #fff'
+
+const PlayBar = styled.div`
+    position: absolute;
+    z-index: 20;
+    left: 10px;
+    right: 120px;
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: #DFE5EC;
+    box-shadow: 0 -8px 18px rgb(150 160 170 / 18%);
+`
+
+const MeterButton = styled.button`
+    border: 0;
+    border-radius: 999px;
+    background: #e0e5ec;
+    box-shadow: ${raised};
+    height: 36px;
+    padding: 0 10px;
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+`
+
+const MeterBar = styled.span<{ $on?: boolean, $hot?: boolean }>`
+    width: 5px;
+    height: ${p => p.$on ? 16 + 4 : 6}px;
+    border-radius: 99px;
+    background: ${p => p.$hot && p.$on ? '#2f7a45' : p.$on ? '#7d8b86' : '#c5ced6'};
+    box-shadow: ${p => p.$hot && p.$on ? '0 0 8px #2f7a45' : 'none'};
+`
+
+const MeterHint = styled.p`
+    margin: 0;
+    color: #9a3b32;
+    font-size: 13px;
+    font-weight: 700;
+`
+
+const MeterSheet = styled.section`
+    position: absolute;
+    z-index: 30;
+    left: 10px;
+    right: 120px;
+    bottom: calc(146px + env(safe-area-inset-bottom));
+    max-height: 62vh;
+    overflow: auto;
+    padding: 8px 14px calc(18px + env(safe-area-inset-bottom));
+    border-radius: 18px 18px 0 0;
+    background: #DFE5EC;
+    box-shadow: 0 -12px 30px rgb(120 130 140 / 28%);
+`
+
+const Handle = styled.button`
+    display: block;
+    width: 48px;
+    height: 6px;
+    margin: 4px auto 10px;
+    border: 0;
+    border-radius: 99px;
+    background: #b7c0c8;
+`
+
+const MeterTitle = styled.h2`
+    margin: 0 0 8px;
+    font-size: 16px;
+`
+
+const WaveCanvas = styled.canvas`
+    width: 100%;
+    height: 96px;
+    border-radius: 12px;
+    background: #e7edf3;
+`
+
+const MeterReadout = styled.div`
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin: 8px 0;
+    font-size: 13px;
+    font-weight: 700;
+`
+
+const Clip = styled.span<{ $on?: boolean }>`
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: ${p => p.$on ? '#b42318' : '#d5dbe3'};
+    color: ${p => p.$on ? 'white' : '#6b7780'};
+`
 
 const Root = styled.div`
     position: absolute;
@@ -539,7 +706,7 @@ const List = styled.div`
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 8px 16px 150px;
+    padding: 8px 16px calc(210px + env(safe-area-inset-bottom));
 `
 
 const Row = styled.div`
