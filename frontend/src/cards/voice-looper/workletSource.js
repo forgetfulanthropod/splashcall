@@ -1,10 +1,12 @@
 /**
  * The tuner runs in an AudioWorklet. The source is a string so the phone
- * does not need a separate worker file in the webpack build.
- * Pitch is a small YIN, and the shift is a two-tap delay. Strength is how
- * far the detected note moves toward the scale.
+ * does not need a separate worker file in the webpack build, and the tests
+ * can run the same class.
+ * Pitch is a small YIN. The shift reads the delay at target/detected so a
+ * sharp note moves down, not further up. The recorded sample stays on that
+ * tuned waveform even when one crossfade sample dips quieter than the dry.
  */
-export const TUNER_SOURCE = [
+const TUNER_SOURCE = [
     'class SplashTuner extends AudioWorkletProcessor {',
     '  constructor() {',
     '    super();',
@@ -15,6 +17,9 @@ export const TUNER_SOURCE = [
     '    this.write = 0;',
     '    this.phase = 0;',
     '    this.ratio = 1;',
+    '    this.period = 256;',
+    '    this.dryEnv = 0;',
+    '    this.tuneEnv = 0;',
     '    this.since = 0;',
     '    this.recording = false;',
     '    this.delay = 0;',
@@ -61,6 +66,7 @@ export const TUNER_SOURCE = [
     '    var tau = tauMin;',
     '    while (tau < tauMax && cmnd[tau] > 0.15) tau++;',
     '    if (tau >= tauMax || cmnd[tau] > 0.15) return 0;',
+    '    while (tau + 1 <= tauMax && cmnd[tau + 1] < cmnd[tau]) tau++;',
     '    var x0 = cmnd[tau - 1] || cmnd[tau];',
     '    var x1 = cmnd[tau];',
     '    var x2 = cmnd[tau + 1] || cmnd[tau];',
@@ -82,7 +88,7 @@ export const TUNER_SOURCE = [
     '      if (gap < dist) { dist = gap; best = n; }',
     '    }',
     '    var target = 440 * Math.pow(2, (best - 69) / 12);',
-    '    var full = freq / target;',
+    '    var full = target / freq;',
     '    var amount = this.strength;',
     '    if (amount < 0) amount = 0;',
     '    if (amount > 1) amount = 1;',
@@ -93,7 +99,6 @@ export const TUNER_SOURCE = [
     '    var channels = outputs[0];',
     '    var output = channels && channels[0];',
     '    if (!input || !output) return true;',
-    '    var win = 1024;',
     '    try {',
     '    for (var i = 0; i < input.length; i++) {',
     '      var dry = input[i];',
@@ -102,13 +107,15 @@ export const TUNER_SOURCE = [
     '      this.since++;',
     '      var wet = dry;',
     '      if (!this.bypass && this.strength > 0.001 && Math.abs(this.ratio - 1) > 0.002) {',
+    '        var hop = this.period > 40 ? this.period : 256;',
+    '        if (hop > 700) hop = 700;',
     '        this.phase += this.ratio - 1;',
-    '        if (this.phase >= win) this.phase -= win;',
-    '        if (this.phase < 0) this.phase += win;',
+    '        if (this.phase >= hop) this.phase -= hop;',
+    '        if (this.phase < 0) this.phase += hop;',
     '        var p = this.phase;',
-    '        var i0 = (this.write - win * 2 + p) & 4095;',
-    '        var i1 = (i0 + (win >> 1)) & 4095;',
-    '        var fade = p / win;',
+    '        var i0 = (this.write - hop * 2 + p) & 4095;',
+    '        var i1 = (i0 + hop) & 4095;',
+    '        var fade = p / hop;',
     '        wet = this.ring[i0] * (1 - fade) + this.ring[i1] * fade;',
     '      }',
     '      var y = this.bypass ? dry : dry * (1 - this.strength) + wet * this.strength;',
@@ -117,8 +124,16 @@ export const TUNER_SOURCE = [
     '      if (this.delay > 0) {',
     '        this.delay -= 1;',
     '      } else if (this.recording) {',
-    '        var kept = dry;',
-    '        if (!this.bypass && Math.abs(y) > Math.abs(dry) * 0.5) kept = y;',
+    '        this.dryEnv = this.dryEnv * 0.98 + Math.abs(dry) * 0.02;',
+    '        this.tuneEnv = this.tuneEnv * 0.98 + Math.abs(y) * 0.02;',
+    '        var kept = y;',
+    '        if (this.bypass || this.strength <= 0.001) kept = dry;',
+    '        else if (this.tuneEnv < this.dryEnv * 0.2 && this.dryEnv > 0.004) kept = dry;',
+    '        else if (this.tuneEnv > 0.00008 && this.tuneEnv < this.dryEnv * 0.9) {',
+    '          var lift = this.dryEnv / this.tuneEnv;',
+    '          if (lift > 2.5) lift = 2.5;',
+    '          kept = y * lift;',
+    '        }',
     '        this.collect[this.collectN++] = kept;',
     '      }',
     '    }',
@@ -130,9 +145,19 @@ export const TUNER_SOURCE = [
     '    if (this.since >= 1024) {',
     '      this.since = 0;',
     '      var next = 1;',
-    '      try { next = this.bypass ? 1 : this.retune(this.yin(sampleRate)); } catch (err) { next = 1; }',
+    '      var detected = 0;',
+    '      try {',
+    '        detected = this.yin(sampleRate);',
+    '        next = this.bypass ? 1 : this.retune(detected);',
+    '      } catch (err) { next = 1; }',
+    '      if (detected > 70) {',
+    '        var period = (sampleRate / detected) | 0;',
+    '        if (period < 32) period = 32;',
+    '        if (period > 600) period = 600;',
+    '        this.period = period;',
+    '      }',
     '      if (!(next > 0.5 && next < 2)) next = 1;',
-    '      this.ratio += (next - this.ratio) * 0.25;',
+    '      this.ratio += (next - this.ratio) * 0.55;',
     '    }',
     '    } catch (err) {',
     '      for (var k = 0; k < input.length; k++) {',
@@ -144,3 +169,5 @@ export const TUNER_SOURCE = [
     '}',
     'registerProcessor("splash-tuner", SplashTuner);',
 ].join('\n')
+
+module.exports = { TUNER_SOURCE }

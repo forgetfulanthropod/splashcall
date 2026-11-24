@@ -1,13 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
-import styled from 'styled-components'
+import styled, { keyframes } from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
-import { imagineWandApiUrl } from '../../environment'
 import { bounce, saveBytes } from './exportMix'
 import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
 import PlaySheet, { SheetTab } from './PlaySheet'
 import { chordAt, defaultSong, defaultTrack, freshLibrary, hashSamples, Library, parseProgression, pushRevision, restoreRevision, Song, SongTrack } from './song'
-import { analyzeTake, renderPart, resolveWand, wandFailureMessage } from './wand'
+import { centsBetween, estimatePitch, listenPlan, listenToVocal, localWand, renderPart } from './wand'
 import { drawWaveform, testVoice, waveformHasEnergy } from './waveform'
 import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
@@ -44,6 +43,8 @@ export default function VoiceLooper(): JSX.Element {
     const [waves, setWaves] = useState<Record<string, Float32Array>>({})
     const [results, setResults] = useState<TestLine[]>([])
     const [testing, setTesting] = useState(false)
+    const [listening, setListening] = useState(false)
+    const wandTap = useRef(0)
     const inputTrim = song.inputTrim
     const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
@@ -340,7 +341,7 @@ export default function VoiceLooper(): JSX.Element {
         })]))
     }
 
-    function applyWand(resolved: ReturnType<typeof resolveWand>, label: string): void {
+    function applyWand(resolved: ReturnType<typeof localWand>, label: string): void {
         const added = resolved.tracks.filter((track) => track.wand)
         added.forEach((track, index) => {
             const part = resolved.arrangement.parts[index]
@@ -362,33 +363,40 @@ export default function VoiceLooper(): JSX.Element {
     }
 
     async function onWand(): Promise<void> {
+        if (listening) return
         const recorded = song.tracks.find((track) => !track.wand && (audio[track.id] || track.audioId !== ''))
-        if (recorded == null) {
-            setError('Record a track first. The wand builds around it.')
-            return
-        }
-        const live = engine().copySamples(recorded.id)
-        const clip = live != null ? live : recorded.audioId !== '' ? await recallAudio(recorded.audioId) : null
-        if (clip == null) {
-            setError('Record a track first. The wand builds around it.')
-            return
-        }
-        const features = analyzeTake(clip.samples, clip.rate, song.bpm)
+        const plan = listenPlan(recorded != null)
+        if (recorded == null) engine().beginCapture()
+        setListening(true)
         setError(null)
-        setNote('Asking for an arrangement…')
-        let api: { arrangement?: unknown, mock?: boolean } | null = null
+        setNote('Listening…')
         try {
-            const response = await fetch(imagineWandApiUrl(), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ features }),
-            })
-            const body = await response.json() as { arrangement?: unknown, mock?: boolean }
-            if (response.ok && body.arrangement != null) api = body
+            let samples = new Float32Array(0)
+            let rate = engine().sampleRate()
+            if (recorded != null) {
+                const live = engine().copySamples(recorded.id)
+                const clip = live != null ? live : recorded.audioId !== '' ? await recallAudio(recorded.audioId) : null
+                if (clip != null) {
+                    samples = clip.samples
+                    rate = clip.rate
+                }
+                await new Promise((resolve) => window.setTimeout(resolve, plan.ms))
+            } else {
+                samples = await engine().listen(plan.ms)
+                rate = engine().sampleRate()
+            }
+            const profile = listenToVocal(samples, rate, songRef.current.bpm)
+            profile.vocalVolume = recorded != null ? recorded.volume : 80
+            wandTap.current += 1
+            const seed = (Math.floor(performance.now()) + wandTap.current * 0x9E3779B1) >>> 0
+            const built = localWand(profile, seed, songRef.current.tracks, Date.now())
+            applyWand(built, 'Before magic wand')
         } catch (err) {
-            api = null
+            setError('The wand could not listen. Your recording is still here.')
+            setNote('')
+        } finally {
+            setListening(false)
         }
-        applyWand(resolveWand(api, features, songRef.current.tracks, Date.now()), 'Before magic wand')
     }
 
     function removeWand(): void {
@@ -495,22 +503,32 @@ export default function VoiceLooper(): JSX.Element {
                 pass: looped,
                 detail: 'Output RMS ' + first.toFixed(3) + ' then ' + second.toFixed(3) + ' · ' + eng.clockState(),
             })
-            const features = analyzeTake(samples, eng.sampleRate(), songRef.current.bpm)
-            const built = resolveWand(null, features, songRef.current.tracks, Date.now())
+            const tone = sineTone(eng.sampleRate(), 450, 0.85)
+            eng.armInjection(tone)
+            await eng.record(track.id, false, { root: 9, scale: 'Major', strength: 100, bypass: false }, 'free')
+            await eng.waitForTake(4000)
+            const tunedClip = eng.copySamples(track.id)
+            const tunedTail = tunedClip == null ? null : tunedClip.samples.subarray(Math.floor(tunedClip.samples.length * 0.6))
+            const tunedHz = tunedTail == null ? 0 : estimatePitch(tunedTail, tunedClip == null ? eng.sampleRate() : tunedClip.rate)
+            const tuneCents = Math.abs(centsBetween(tunedHz, 440))
+            const tunePass = tunedHz > 0 && tuneCents <= 20
+            lines.push({
+                name: 'Auto-tune',
+                pass: tunePass,
+                detail: '450 → ' + (tunedHz > 0 ? tunedHz.toFixed(0) : '?') + ' Hz' + (tunePass ? ' ✓' : ''),
+            })
+            const profile = listenToVocal(samples, eng.sampleRate(), songRef.current.bpm)
+            profile.vocalVolume = track.volume
+            const built = localWand(profile, 1, songRef.current.tracks, Date.now())
+            const other = localWand(profile, 2, songRef.current.tracks, Date.now() + 1)
             const added = built.tracks.filter((item) => item.wand)
             const kept = built.tracks.find((item) => item.id === track.id)
-            let wandOk = built.local && added.length >= 2 && built.note.indexOf('AI fill needs xAI credits') >= 0 && kept != null && !kept.wand
+            let wandOk = added.length >= 2 && kept != null && !kept.wand && wandStamp(built) !== wandStamp(other)
             applyWand(built, 'Before test wand')
             added.forEach((item) => {
                 if (!waveformHasEnergy(eng.peaks(item.id, 64))) wandOk = false
             })
             lines.push({ name: 'Magic wand', pass: wandOk, detail: built.note })
-            const credits = wandFailureMessage(403)
-            lines.push({
-                name: 'Credits message',
-                pass: credits === 'Magic wand needs xAI credits',
-                detail: credits,
-            })
         } catch (err) {
             lines.push({ name: 'Test', pass: false, detail: messageFrom(err) })
         }
@@ -567,7 +585,7 @@ export default function VoiceLooper(): JSX.Element {
             {tracks[0] != null && !tracks.some((item) => audio[item.id] || item.audioId !== '') &&
                 <Add type="button" id="VoiceLooperBigRec" onClick={() => onRecord(tracks[0], false)}>Record</Add>}
             <ToolRow>
-                <ToolButton type="button" id="VoiceLooperWand" aria-label="Magic wand" title="Magic wand" onClick={() => { void onWand() }}><WandIcon /></ToolButton>
+                <ToolButton type="button" id="VoiceLooperWand" $listen={listening} aria-label="Magic wand" title={listening ? 'Listening…' : 'Magic wand'} onClick={() => { void onWand() }}><WandIcon /></ToolButton>
                 <ToolButton type="button" id="VoiceLooperClear" aria-label="Clear" title="Clear" onClick={onClearSong}><ClearIcon /></ToolButton>
                 <ToolButton type="button" id="VoiceLooperTest" aria-label="Test" title="Test" disabled={testing} onClick={() => { void onTest() }}><TestIcon /></ToolButton>
             </ToolRow>
@@ -1115,17 +1133,24 @@ const ToolRow = styled.div`
     align-items: center;
 `
 
-const ToolButton = styled.button`
+const wandPulse = keyframes`
+    0% { transform: scale(1); }
+    50% { transform: scale(1.14); }
+    100% { transform: scale(1); }
+`
+
+const ToolButton = styled.button<{ $listen?: boolean }>`
     width: 44px;
     height: 44px;
     border: 0;
     border-radius: 14px;
     background: #e0e5ec;
-    box-shadow: ${raised};
-    color: #243038;
+    box-shadow: ${p => p.$listen ? '0 0 0 3px #2f7a45' : raised};
+    color: ${p => p.$listen ? '#1f6b3a' : '#243038'};
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    animation: ${p => p.$listen ? wandPulse : 'none'} 0.8s ease-in-out infinite;
     &:disabled { opacity: 0.45; }
 `
 
@@ -1362,6 +1387,17 @@ function Triangle(): JSX.Element {
 
 function Pause(): JSX.Element {
     return <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="3" y="2" width="4" height="14" fill="currentColor" /><rect x="11" y="2" width="4" height="14" fill="currentColor" /></svg>
+}
+
+function sineTone(rate: number, freq: number, seconds: number): Float32Array {
+    const length = Math.max(1, Math.floor(rate * seconds))
+    const out = new Float32Array(length)
+    for (let i = 0; i < length; i++) out[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.5
+    return out
+}
+
+function wandStamp(built: { arrangement: { chords: string[], parts: { notes: string[], pattern: string[] }[] } }): string {
+    return built.arrangement.chords.join(',') + '|' + built.arrangement.parts.map((part) => part.notes.join('.') + '/' + part.pattern.join('.')).join(';')
 }
 
 function WandIcon(): JSX.Element {

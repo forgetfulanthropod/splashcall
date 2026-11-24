@@ -111,6 +111,7 @@ export class LoopEngine {
     private micSource: MediaStreamAudioSourceNode | null = null
     private injection: Float32Array | null = null
     private injectionSource: AudioBufferSourceNode | null = null
+    private hearing: Float32Array[] | null = null
     private micHeld = false
     private captureInstalled = false
 
@@ -1037,7 +1038,34 @@ export class LoopEngine {
         return loopSeconds(this.bpm, track.bars)
     }
 
+    /** Dry mic (or the injected test tone) for the wand's two-second listen. */
+    async listen(ms: number): Promise<Float32Array> {
+        this.beginCapture()
+        await this.ensure()
+        const ctx = this.ctx
+        if (ctx == null) return new Float32Array(0)
+        if (this.injection == null && this.mic == null) {
+            try { await this.attachMic() } catch (err) { return new Float32Array(0) }
+        }
+        if (needsAudioResume(ctx.state)) {
+            try { await ctx.resume() } catch (err) { /* the tap already resumed it */ }
+        }
+        if (this.tuner != null) {
+            this.tuner.port.postMessage({ type: 'config', strength: 0, bypass: true, mask: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] })
+            this.tuner.port.postMessage({ type: 'record', on: true, delaySamples: 0 })
+        }
+        this.hearing = []
+        await new Promise((resolve) => window.setTimeout(resolve, Math.max(200, ms)))
+        if (this.tuner != null) this.tuner.port.postMessage({ type: 'record', on: false, delaySamples: 0 })
+        const chunks = this.hearing || []
+        this.hearing = null
+        let length = 0
+        chunks.forEach((chunk) => { length += chunk.length })
+        return join(chunks, length)
+    }
+
     private takeChunk(samples: Float32Array): void {
+        if (this.hearing != null) this.hearing.push(new Float32Array(samples))
         const take = this.recording
         const ctx = this.ctx
         if (take == null || ctx == null) return
