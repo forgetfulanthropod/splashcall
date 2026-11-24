@@ -2,30 +2,17 @@ import React, { useEffect, useRef, useState } from 'react'
 import styled from 'styled-components'
 import { useAppContext } from '../../context'
 import { clearDataEvent, emitDataEvent, onDataEvent } from '../../connection/dataConn'
+import { bounce, saveBytes } from './exportMix'
 import { EngineSnapshot, LoopEngine, LoopLength, MicLevel, TuneSettings } from './engine'
+import PlaySheet, { SheetTab } from './PlaySheet'
+import { chordAt, defaultSong, defaultTrack, freshLibrary, hashSamples, Library, parseProgression, pushRevision, restoreRevision, Song, SongTrack } from './song'
+import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
 
 const SCALES: ScaleName[] = ['Major', 'Minor', 'Dorian', 'Mixolydian', 'Pentatonic']
 const LENGTHS: LoopLength[] = [1, 2, 4, 8, 'free']
 
-type Track = {
-    id: string
-    name: string
-    root: number
-    scale: ScaleName
-    strength: number
-    bypass: boolean
-    volume: number
-    muted: boolean
-    bars: LoopLength
-}
-
-const DEFAULTS: Track[] = [
-    { id: 'vocals', name: 'Vocals', root: 0, scale: 'Major', strength: 75, bypass: false, volume: 80, muted: false, bars: 4 },
-    { id: 'harmony', name: 'Harmony', root: 0, scale: 'Major', strength: 90, bypass: false, volume: 75, muted: false, bars: 2 },
-    { id: 'beatbox', name: 'Beatbox', root: 0, scale: 'Major', strength: 0, bypass: false, volume: 85, muted: false, bars: 1 },
-    { id: 'bass', name: 'Bass', root: 0, scale: 'Major', strength: 55, bypass: false, volume: 80, muted: false, bars: 8 },
-]
+type Track = SongTrack
 
 function tuneOf(track: Track): TuneSettings {
     return { root: track.root, scale: track.scale, strength: track.strength, bypass: track.bypass }
@@ -33,24 +20,58 @@ function tuneOf(track: Track): TuneSettings {
 
 export default function VoiceLooper(): JSX.Element {
     const { otherName } = useAppContext()
-    const [tracks, setTracks] = useState<Track[]>(DEFAULTS)
-    const [bpm, setBpm] = useState(90)
-    const [metronome, setMetronome] = useState(false)
-    const [countIn, setCountIn] = useState(true)
+    const [library, setLibrary] = useState<Library>(() => readLibrary() || freshLibrary())
+    const song = library.songs.find((item) => item.id === library.activeId) || library.songs[0]
+    const tracks = song.tracks
+    const bpm = song.bpm
+    const metronome = song.metronome
+    const countIn = song.countIn
     const [clock, setClock] = useState<EngineSnapshot>({ playing: false, elapsed: 0, recordId: null, phase: null, overdub: false, progress: {} })
     const [audio, setAudio] = useState<Record<string, boolean>>({})
     const [sheetId, setSheetId] = useState<string | null>(null)
     const [editing, setEditing] = useState<string | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [level, setLevel] = useState<MicLevel>({ rms: 0, peak: 0, db: -96, clipped: false, hearing: false, ready: false })
-    const [meterOpen, setMeterOpen] = useState(false)
-    const [inputTrim, setInputTrim] = useState(100)
+    const [sheetOpen, setSheetOpen] = useState(false)
+    const [tab, setTab] = useState<SheetTab>('Song')
+    const [note, setNote] = useState('')
+    const inputTrim = song.inputTrim
     const waveRef = useRef<HTMLCanvasElement | null>(null)
     const engineRef = useRef<LoopEngine | null>(null)
     const tracksRef = useRef(tracks)
     const suppress = useRef(false)
     const selfId = useRef(Math.random().toString(36).slice(2, 10))
     tracksRef.current = tracks
+    const songRef = useRef(song)
+    songRef.current = song
+    const savedAudio = useRef<Record<string, string>>({})
+
+    function updateActive(recipe: (current: Song) => Song): void {
+        setLibrary((current) => ({
+            ...current,
+            songs: current.songs.map((item) => item.id === current.activeId ? { ...recipe(item), updated: Date.now() } : item),
+        }))
+    }
+
+    function setTracks(update: (current: Track[]) => Track[]): void {
+        updateActive((current) => ({ ...current, tracks: update(current.tracks) }))
+    }
+
+    function setBpm(next: number): void {
+        updateActive((current) => ({ ...current, bpm: next }))
+    }
+
+    function setMetronome(next: boolean): void {
+        updateActive((current) => ({ ...current, metronome: next }))
+    }
+
+    function setCountIn(next: boolean): void {
+        updateActive((current) => ({ ...current, countIn: next }))
+    }
+
+    function setInputTrim(next: number): void {
+        updateActive((current) => ({ ...current, inputTrim: next }))
+    }
 
     function engine(): LoopEngine {
         if (engineRef.current == null) {
@@ -60,6 +81,19 @@ export default function VoiceLooper(): JSX.Element {
                 const flags: Record<string, boolean> = {}
                 tracksRef.current.forEach((track) => {
                     flags[track.id] = current.hasAudio(track.id)
+                    if (!flags[track.id]) return
+                    const clip = current.copySamples(track.id)
+                    if (clip == null) return
+                    const stamp = hashSamples(clip.samples) + 'r' + clip.rate
+                    if (savedAudio.current[track.id] === stamp) return
+                    savedAudio.current[track.id] = stamp
+                    rememberAudio(clip.samples, clip.rate).then((id) => {
+                        updateActive((currentSong) => ({
+                            ...currentSong,
+                            revisions: pushRevision(currentSong, 'Recorded ' + track.name, Date.now()),
+                            tracks: currentSong.tracks.map((item) => item.id === track.id ? { ...item, audioId: id } : item),
+                        }))
+                    }).catch(() => { setError('This phone is full. Delete an old revision or song.') })
                 })
                 setAudio(flags)
                 setClock(current.snapshot())
@@ -89,6 +123,17 @@ export default function VoiceLooper(): JSX.Element {
             }
             const canvas = waveRef.current
             if (canvas != null) drawWave(canvas, loop.waveform())
+            const current = songRef.current
+            if (current.followChords && pos.playing) {
+                const chord = chordAt(pos.elapsed, current.bpm, current.chords, current.barsEach)
+                if (chord != null) {
+                    const recording = current.tracks.find((item) => item.id === pos.recordId)
+                    const target = recording || current.tracks[0]
+                    if (target != null && !target.bypass) {
+                        loop.setTune({ root: chord.root, scale: chord.scale, strength: target.strength, bypass: false })
+                    }
+                }
+            }
             frame = requestAnimationFrame(tick)
         }
         frame = requestAnimationFrame(tick)
@@ -149,6 +194,74 @@ export default function VoiceLooper(): JSX.Element {
         tracks.forEach((track) => engine().setGain(track.id, track.volume, track.muted))
     }, [tracks])
 
+    useEffect(() => {
+        const eng = engine()
+        eng.retainTracks(song.tracks.map((track) => track.id))
+        eng.setSongBars(song.songBars)
+        eng.setBpm(song.bpm)
+        eng.setMetronome(song.metronome)
+        eng.setMetronomeVolume(song.metronomeVolume / 100)
+        eng.setCountIn(song.countIn)
+        eng.setInputTrim(song.inputTrim / 100)
+        song.tracks.forEach((track) => {
+            eng.configure(track.id, {
+                bars: track.bars,
+                preGapBeats: track.preGapBeats,
+                postGapBeats: track.postGapBeats,
+                preGapMs: track.preGapMs,
+                postGapMs: track.postGapMs,
+                startBar: track.startBar,
+                endBar: Math.min(track.endBar, song.songBars),
+                distortMix: track.distort.mix,
+                distortPoints: track.distort.points,
+                sections: track.distort.sections,
+            })
+        })
+    }, [song])
+
+    useEffect(() => { void keepAwake() }, [])
+
+    const audioKey = song.id + '|' + song.tracks.map((track) => track.audioId).join(',')
+    useEffect(() => {
+        let cancel = false
+        songRef.current.tracks.forEach((track) => {
+            if (track.audioId === '' || savedAudio.current[track.id] === track.audioId) return
+            recallAudio(track.audioId).then((clip) => {
+                if (cancel || clip == null) return
+                savedAudio.current[track.id] = track.audioId
+                engine().loadSamples(track.id, clip.samples, clip.rate)
+            }).catch(() => { /* a missing take stays empty */ })
+        })
+        return () => { cancel = true }
+    }, [audioKey])
+
+    const arrangeStamp = JSON.stringify(song.tracks.map((track) => [track.startBar, track.endBar, track.preGapBeats, track.postGapBeats, track.preGapMs, track.postGapMs, track.distort])) + JSON.stringify(song.chords)
+    const seenArrange = useRef('')
+    useEffect(() => {
+        if (seenArrange.current === '') {
+            seenArrange.current = arrangeStamp
+            return
+        }
+        if (seenArrange.current === arrangeStamp) return
+        const timer = window.setTimeout(() => {
+            seenArrange.current = arrangeStamp
+            updateActive((current) => ({ ...current, revisions: pushRevision(current, 'Edited arrangement', Date.now()) }))
+        }, 900)
+        return () => window.clearTimeout(timer)
+    }, [arrangeStamp])
+
+    const libraryRef = useRef(library)
+    useEffect(() => {
+        const previous = libraryRef.current
+        const timer = window.setTimeout(() => {
+            const warning = writeLibrary(library)
+            if (warning !== '') setError(warning)
+            retainAudio(previous, library).catch(() => { /* a private window may block storage */ })
+            libraryRef.current = library
+        }, 500)
+        return () => window.clearTimeout(timer)
+    }, [library])
+
     const sheet = tracks.find((track) => track.id === sheetId) || null
     const peer = otherName.trim().length > 0 ? otherName.trim() : '…'
 
@@ -203,17 +316,34 @@ export default function VoiceLooper(): JSX.Element {
 
     function addTrack(): void {
         const id = 'track-' + Math.random().toString(36).slice(2, 8)
-        setTracks((current) => current.concat([{
+        setTracks((current) => current.concat([defaultTrack({
             id,
             name: 'Track ' + (current.length + 1),
-            root: 0,
-            scale: 'Major',
-            strength: 70,
-            bypass: false,
-            volume: 80,
-            muted: false,
-            bars: 4,
-        }]))
+            endBar: song.songBars,
+        })]))
+    }
+
+    async function exportSong(preferWav: boolean): Promise<void> {
+        setNote('Rendering…')
+        const clips: Record<string, { samples: Float32Array, rate: number }> = {}
+        for (let i = 0; i < song.tracks.length; i++) {
+            const track = song.tracks[i]
+            const live = engine().copySamples(track.id)
+            if (live != null) clips[track.id] = live
+            else if (track.audioId !== '') {
+                const stored = await recallAudio(track.audioId)
+                if (stored != null) clips[track.id] = stored
+            }
+        }
+        try {
+            const result = await bounce(song, clips, (amount) => setNote('Rendering ' + Math.round(amount * 100) + '%'), preferWav)
+            const safe = song.name.replace(/[^a-z0-9\- ]/gi, '').trim() || 'song'
+            const saved = await saveBytes(safe + '.' + result.extension, result.bytes, result.mime)
+            const fallback = !preferWav && result.kind === 'wav' ? 'This phone saved a WAV instead of AAC. ' : ''
+            setNote(fallback + saved)
+        } catch (err) {
+            setNote('The mix could not be rendered.')
+        }
     }
 
     function removeTrack(id: string): void {
@@ -330,12 +460,16 @@ export default function VoiceLooper(): JSX.Element {
                 {clock.playing ? <Pause /> : <Triangle />}
             </Play>
             <Round type="button" id="VoiceLooperStop" aria-label="Stop" onClick={onStop}><Square /></Round>
+            <Round type="button" aria-label={sheetOpen ? 'Close song tools' : 'Open song tools'} onClick={() => setSheetOpen((open) => !open)}>{sheetOpen ? '▾' : '▴'}</Round>
             <MeterButton
                 type="button"
                 id="VoiceLooperMeter"
-                aria-expanded={meterOpen}
+                aria-expanded={sheetOpen && tab === 'Mic'}
                 aria-label={level.ready ? (level.hearing ? 'Microphone hears you' : 'Can\'t hear you') : 'Microphone level'}
-                onClick={() => setMeterOpen((open) => !open)}
+                onClick={() => {
+                    setTab('Mic')
+                    setSheetOpen(true)
+                }}
             >
                 {[0, 1, 2, 3].map((bar) =>
                     <MeterBar key={bar} $on={level.rms > 0.012 * (bar + 1)} $hot={level.hearing} />
@@ -344,32 +478,66 @@ export default function VoiceLooper(): JSX.Element {
             {clock.phase === 'recording' && !level.hearing &&
                 <MeterHint role="status">{error != null && error.toLowerCase().indexOf('microphone') >= 0 ? 'Mic blocked' : 'Can\'t hear you'}</MeterHint>}
         </PlayBar>
-        {meterOpen && <MeterSheet role="dialog" aria-label="Microphone">
-            <Handle type="button" aria-label="Close microphone view" onClick={() => setMeterOpen(false)} />
-            <MeterTitle>Microphone</MeterTitle>
-            <WaveCanvas ref={waveRef} width={640} height={120} />
-            <MeterReadout>
-                <span>RMS {level.db.toFixed(0)} dB</span>
-                <span>Peak {(level.peak > 0 ? Math.max(-96, 20 * Math.log(level.peak) / Math.LN10) : -96).toFixed(0)} dB</span>
-                <Clip $on={level.clipped}>CLIP</Clip>
-            </MeterReadout>
-            {!level.ready && <MeterHint>Tap Rec, then allow the microphone.</MeterHint>}
-            {level.ready && !level.hearing && <MeterHint>Can't hear you. Move closer or raise the input.</MeterHint>}
-            {error != null && <ErrorText role="alert">{error}</ErrorText>}
-            <FieldLabel>Input {inputTrim}%</FieldLabel>
-            <Range
-                aria-label="Input gain"
-                type="range"
-                min={0}
-                max={200}
-                value={inputTrim}
-                onChange={(event) => {
-                    const next = Number(event.target.value)
-                    setInputTrim(next)
-                    engine().setInputTrim(next / 100)
-                }}
-            />
-        </MeterSheet>}
+        {sheetOpen && <PlaySheet
+            song={song}
+            tab={tab}
+            elapsed={clock.elapsed}
+            level={level}
+            error={error}
+            inputTrim={inputTrim}
+            note={note}
+            waveRef={waveRef}
+            songs={library.songs.map((item) => ({ id: item.id, name: item.name, updated: item.updated, bars: item.songBars, bpm: item.bpm }))}
+            onTab={setTab}
+            onClose={() => setSheetOpen(false)}
+            onSeek={(seconds) => engine().seek(seconds)}
+            onBars={(bars) => updateActive((current) => ({ ...current, songBars: bars }))}
+            onTrack={(id, partial) => {
+                updateActive((current) => ({
+                    ...current,
+                    tracks: current.tracks.map((item) => item.id === id ? { ...item, ...partial } : item),
+                }))
+            }}
+            onChords={(text) => updateActive((current) => ({ ...current, chords: parseChords(text) }))}
+            onBarsEach={(bars) => updateActive((current) => ({ ...current, barsEach: bars }))}
+            onFollow={(on) => updateActive((current) => ({ ...current, followChords: on }))}
+            onMetronomeVolume={(volume) => updateActive((current) => ({ ...current, metronomeVolume: volume }))}
+            onTrim={(value) => { setInputTrim(value); engine().setInputTrim(value / 100) }}
+            onSaveRevision={() => updateActive((current) => ({ ...current, revisions: pushRevision(current, 'Saved version', Date.now()) }))}
+            onRestore={(id) => updateActive((current) => {
+                const revision = current.revisions.find((item) => item.id === id)
+                if (revision == null) return current
+                return restoreRevision(current, revision, Date.now())
+            })}
+            onPreview={(id) => {
+                const revision = song.revisions.find((item) => item.id === id)
+                if (revision == null) return
+                engine().seek(0)
+                engine().play().catch((err) => setError(messageFrom(err)))
+                setNote('Playing the saved version. Restore keeps it.')
+            }}
+            onRename={(name) => updateActive((current) => ({ ...current, name }))}
+            onDuplicate={() => setLibrary((current) => {
+                const source = current.songs.find((item) => item.id === current.activeId) || current.songs[0]
+                const copy = defaultSong({ ...source, id: 'song-' + Date.now(), name: source.name + ' copy', revisions: [] })
+                return { ...current, activeId: copy.id, songs: current.songs.concat([copy]) }
+            })}
+            onClear={() => {
+                if (!window.confirm('Clear this song?')) return
+                updateActive(() => defaultSong({ id: song.id, name: song.name }))
+                engine().clearSongAudio()
+            }}
+            onWav={() => { void exportSong(true) }}
+            onMp4={() => { void exportSong(false) }}
+            onNew={() => setLibrary((current) => {
+                const created = defaultSong({ id: 'song-' + Date.now(), name: 'Song ' + (current.songs.length + 1) })
+                return { ...current, activeId: created.id, songs: current.songs.concat([created]) }
+            })}
+            onSwitch={(id) => {
+                engine().stop()
+                setLibrary((current) => ({ ...current, activeId: id }))
+            }}
+        />}
         {sheet != null && <SheetBackdrop onClick={() => setSheetId(null)}>
             <Sheet role="dialog" aria-label={'Auto-tune ' + sheet.name} onClick={(event) => event.stopPropagation()}>
                 <SheetHead>
@@ -453,6 +621,11 @@ function masterLeft(elapsed: number, bpm: number): number {
     return bar - (elapsed % bar)
 }
 
+function parseChords(text: string): Song['chords'] {
+    const parsed = parseProgression(text)
+    return parsed.length > 0 ? parsed : parseProgression('I V vi IV')
+}
+
 function isLength(value: LoopLength | undefined): value is LoopLength {
     return value === 1 || value === 2 || value === 4 || value === 8 || value === 'free'
 }
@@ -477,7 +650,7 @@ function isScale(value: string): value is ScaleName {
 }
 
 function cleanRemote(track: Track): Track {
-    return {
+    return defaultTrack({
         id: typeof track.id === 'string' ? track.id.slice(0, 40) : 'track',
         name: typeof track.name === 'string' ? track.name.slice(0, 24) : 'Track',
         root: clampIndex(track.root),
@@ -487,7 +660,7 @@ function cleanRemote(track: Track): Track {
         volume: clampPercent(track.volume, 80),
         muted: Boolean(track.muted),
         bars: isLength(track.bars) ? track.bars : 4,
-    }
+    })
 }
 
 const raised = '0.22rem 0.22rem 0.45rem rgb(195 193 198 / 90%), -0.12rem -0.12rem 0.35rem #fff'
