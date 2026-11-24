@@ -12,7 +12,7 @@ const {
 } = require('../src/cards/voice-looper/theory')
 const { dbFromRms, micAudioConstraints, needsAudioResume } = require('../src/cards/voice-looper/capture')
 const { encodeWav } = require('../src/cards/voice-looper/exportMix')
-const { arrangementToTracks, renderPart, wandFailureMessage } = require('../src/cards/voice-looper/wand')
+const { arrangementToTracks, renderPart, resolveWand, wandFailureMessage } = require('../src/cards/voice-looper/wand')
 const { makeup, peaksPerPixel, rmsOf, testVoice, waveformHasEnergy } = require('../src/cards/voice-looper/waveform')
 const { createArrangement } = require('../server/wand')
 const { defaultTrack, freshLibrary } = require('../src/cards/voice-looper/song')
@@ -180,6 +180,34 @@ test('the wand adds parts and leaves the recording in place', function () {
     for (let i = 0; i < bass.length; i += 10) energy += bass[i] * bass[i]
     assert.ok(energy > 0)
     assert.equal(wandFailureMessage(403), 'Magic wand needs xAI credits')
+})
+
+test('a failed wand still adds local parts and keeps the recording', function () {
+    const user = [defaultTrack({ id: 'vocals', name: 'My voice', audioId: 'take-1', bars: 'free' })]
+    const features = { bpm: 90, key: 0, keyName: 'C', scale: 'Major', loopSeconds: 2, rms: 0.2, peak: 0.4, bars: 1 }
+    const failed = resolveWand(null, features, user, 5)
+    assert.equal(failed.local, true)
+    assert.ok(failed.note.indexOf('AI fill needs xAI credits') >= 0)
+    assert.equal(failed.tracks[0].id, 'vocals')
+    assert.equal(failed.tracks[0].audioId, 'take-1')
+    assert.equal(failed.tracks[0].wand, false)
+    assert.ok(failed.tracks.filter((track) => track.wand).length >= 2)
+    const again = resolveWand({ arrangement: null }, features, user, 5)
+    assert.equal(again.local, true)
+    assert.deepEqual(again.arrangement.parts.map((part) => part.name), failed.arrangement.parts.map((part) => part.name))
+    const live = resolveWand({
+        arrangement: {
+            chords: ['D'],
+            barsEach: 2,
+            parts: [{ name: 'Only bass', kind: 'bass', notes: ['D2'], pattern: [], startBar: 0, endBar: 4 }],
+        },
+        mock: false,
+    }, features, user, 9)
+    assert.equal(live.local, false)
+    assert.equal(live.note.indexOf('AI fill needs xAI credits'), -1)
+    assert.equal(live.tracks[0].audioId, 'take-1')
+    assert.equal(live.tracks.filter((track) => track.wand).length, 1)
+    assert.equal(live.tracks[1].name, 'Only bass')
 })
 
 test('a 403 from xAI is named instead of a generic failure', async function () {

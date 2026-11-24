@@ -10,6 +10,9 @@ function wandFailureMessage(status) {
     return 'Magic wand could not build an arrangement. Your recording is still here.'
 }
 
+/** Shown when the live model cannot be called. The local parts still appear. */
+const LOCAL_NOTE = 'AI fill needs xAI credits'
+
 function analyzeTake(samples, sampleRate, bpmHint) {
     const rate = sampleRate > 0 ? sampleRate : 44100
     let sum = 0
@@ -100,8 +103,26 @@ function practiceArrangement(features) {
 }
 
 /**
- * Append wand parts. Every non-wand track is copied through unchanged.
+ * Use a live arrangement when the API returned one.
+ * Any failure, including a credits 403, still builds the local parts
+ * around the recording and leaves the user's tracks in place.
  */
+function resolveWand(api, features, userTracks, now) {
+    const live = api != null && api.arrangement != null
+    const arrangement = live ? api.arrangement : practiceArrangement(features)
+    const built = arrangementToTracks(arrangement, userTracks, now)
+    let note = LOCAL_NOTE
+    if (live && api.mock) note = 'Practice arrangement. Your recording is unchanged.'
+    else if (live) note = 'Added parts around your recording.'
+    return {
+        tracks: built.tracks,
+        arrangement: built.arrangement,
+        note: note,
+        local: !live,
+    }
+}
+
+/** Append wand parts. Every non-wand track is copied through unchanged. */
 function arrangementToTracks(arrangement, userTracks, now) {
     const clean = sanitizeArrangement(arrangement)
     const stamp = now > 0 ? now : 1
@@ -212,10 +233,12 @@ function buildWandRequest(features) {
 
 module.exports = {
     wandFailureMessage,
+    LOCAL_NOTE,
     analyzeTake,
     sanitizeArrangement,
     practiceArrangement,
     arrangementToTracks,
+    resolveWand,
     renderPart,
     buildWandRequest,
 }

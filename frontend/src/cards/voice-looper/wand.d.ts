@@ -20,7 +20,9 @@ export type WandPart = {
 }
 export type WandArrangement = { chords: string[], barsEach: number, parts: WandPart[] }
 
+export const LOCAL_NOTE: string
 export function wandFailureMessage(status: number): string
+export function resolveWand(api: { arrangement?: unknown, mock?: boolean } | null, features: TakeFeatures | null, userTracks: SongTrack[], now: number): { tracks: SongTrack[], arrangement: WandArrangement, note: string, local: boolean }
 export function analyzeTake(samples: Float32Array | number[], sampleRate: number, bpmHint: number): TakeFeatures
 export function sanitizeArrangement(raw: unknown): WandArrangement
 export function practiceArrangement(features: TakeFeatures | null): WandArrangement
