@@ -10,6 +10,7 @@ const {
     scalePitchClasses,
     targetFrequency,
 } = require('../src/cards/voice-looper/theory')
+const { dbFromRms, micAudioConstraints, needsAudioResume } = require('../src/cards/voice-looper/capture')
 
 test('eight bars at 96 BPM is a 20 second loop', function () {
     assert.equal(loopSeconds(96, 8), 20)
@@ -44,6 +45,19 @@ test('a count-in starts the take on a downbeat one bar later', function () {
     assert.equal(recordDownbeat(10, false, 0, bar, false), 10)
     assert.equal(recordDownbeat(10.2, true, 10, bar, false), 12)
     assert.equal(recordDownbeat(10.2, true, 10, bar, true), 14)
+})
+
+test('the mic is recorded raw so speaker playback is not cancelled', function () {
+    const audio = micAudioConstraints()
+    assert.equal(audio.echoCancellation, false)
+    assert.equal(audio.noiseSuppression, false)
+    assert.equal(audio.autoGainControl, false)
+    assert.equal(needsAudioResume('suspended'), true)
+    assert.equal(needsAudioResume('interrupted'), true)
+    assert.equal(needsAudioResume('running'), false)
+    assert.ok(Math.abs(dbFromRms(1) - 0) < 0.001)
+    assert.ok(dbFromRms(0.1) < 0)
+    assert.equal(dbFromRms(0), -96)
 })
 
 test('the clock wraps inside the loop', function () {

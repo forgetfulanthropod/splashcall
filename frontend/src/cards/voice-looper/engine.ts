@@ -1,3 +1,4 @@
+import { dbFromRms, micAudioConstraints, needsAudioResume } from './capture'
 import { barSeconds, loopSeconds, recordDownbeat, scalePitchClasses } from './theory'
 import { TUNER_SOURCE } from './workletSource'
 
@@ -9,6 +10,15 @@ export type TuneSettings = {
 }
 
 export type LoopLength = 1 | 2 | 4 | 8 | 'free'
+
+export type MicLevel = {
+    rms: number
+    peak: number
+    db: number
+    clipped: boolean
+    hearing: boolean
+    ready: boolean
+}
 
 export type EngineSnapshot = {
     playing: boolean
@@ -48,6 +58,10 @@ export class LoopEngine {
     private tuner: AudioWorkletNode | null = null
     private processor: ScriptProcessorNode | null = null
     private monitor: GainNode | null = null
+    private inputGain: GainNode | null = null
+    private inputAnalyser: AnalyserNode | null = null
+    private wave = new Float32Array(1024)
+    private inputTrim = 1
     private mic: MediaStream | null = null
     private tracks = new Map<string, TrackNode>()
     private playing = false
@@ -79,7 +93,44 @@ export class LoopEngine {
     /** Call synchronously inside the tap so the audio clock can leave the suspended state. */
     prime(): void {
         const ctx = this.context()
-        if (ctx != null && ctx.state === 'suspended') void ctx.resume()
+        if (ctx != null && needsAudioResume(ctx.state)) void ctx.resume()
+    }
+
+    /** What the microphone is sending, measured before auto-tune. */
+    level(): MicLevel {
+        const analyser = this.inputAnalyser
+        if (analyser == null) {
+            return { rms: 0, peak: 0, db: -96, clipped: false, hearing: false, ready: false }
+        }
+        analyser.getFloatTimeDomainData(this.wave)
+        let sum = 0
+        let peak = 0
+        const step = 2
+        for (let i = 0; i < this.wave.length; i += step) {
+            const sample = this.wave[i]
+            const abs = sample < 0 ? -sample : sample
+            if (abs > peak) peak = abs
+            sum += sample * sample
+        }
+        const rms = Math.sqrt(sum / Math.max(1, this.wave.length / step))
+        return {
+            rms,
+            peak,
+            db: dbFromRms(rms),
+            clipped: peak >= 0.98,
+            hearing: rms >= 0.02,
+            ready: true,
+        }
+    }
+
+    waveform(): Float32Array {
+        return this.wave
+    }
+
+    setInputTrim(value: number): void {
+        const next = Math.max(0, Math.min(2, value))
+        this.inputTrim = next
+        if (this.inputGain != null) this.inputGain.gain.value = next
     }
 
     private context(): AudioContext | null {
@@ -107,7 +158,7 @@ export class LoopEngine {
             this.failed = 'This browser cannot play a loop.'
             throw new Error(this.failed)
         }
-        if (ctx.state === 'suspended') await ctx.resume()
+        if (needsAudioResume(ctx.state)) await ctx.resume()
         const monitor = ctx.createGain()
         monitor.gain.value = 0
         monitor.connect(ctx.destination)
@@ -119,7 +170,7 @@ export class LoopEngine {
         let stream: MediaStream
         try {
             stream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+                audio: micAudioConstraints(),
                 video: false,
             })
         } catch (err) {
@@ -127,19 +178,40 @@ export class LoopEngine {
             throw new Error(this.failed)
         }
         this.mic = stream
+        if (needsAudioResume(ctx.state)) await ctx.resume()
         const source = ctx.createMediaStreamSource(stream)
+        const inputGain = ctx.createGain()
+        inputGain.gain.value = this.inputTrim
+        const analyser = ctx.createAnalyser()
+        analyser.fftSize = 1024
+        analyser.smoothingTimeConstant = 0.35
+        source.connect(inputGain)
+        inputGain.connect(analyser)
+        this.inputGain = inputGain
+        this.inputAnalyser = analyser
+        const meterKeep = ctx.createGain()
+        meterKeep.gain.value = 0.001
+        analyser.connect(meterKeep)
+        meterKeep.connect(ctx.destination)
+        const sink = ctx.createMediaStreamDestination()
+        analyser.connect(sink)
         const worklet = (ctx as AudioContext & { audioWorklet?: { addModule: (url: string) => Promise<void> } }).audioWorklet
         if (worklet != null) {
             const url = URL.createObjectURL(new Blob([TUNER_SOURCE], { type: 'application/javascript' }))
             try {
                 await worklet.addModule(url)
-                const node = new AudioWorkletNode(ctx, 'splash-tuner')
+                const node = new AudioWorkletNode(ctx, 'splash-tuner', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [2],
+                })
                 node.port.onmessage = (event: MessageEvent) => {
                     const data = event.data as { type?: string, samples?: Float32Array }
                     if (data.type === 'chunk' && data.samples) this.takeChunk(data.samples)
                 }
-                source.connect(node)
+                analyser.connect(node)
                 node.connect(monitor)
+                node.connect(sink)
                 this.tuner = node
                 this.tuned = true
                 this.failed = ''
@@ -150,10 +222,10 @@ export class LoopEngine {
                 URL.revokeObjectURL(url)
             }
         }
-        this.attachDryCapture(ctx, source, monitor)
+        this.attachDryCapture(ctx, analyser, monitor, sink)
     }
 
-    private attachDryCapture(ctx: AudioContext, source: MediaStreamAudioSourceNode, monitor: GainNode): void {
+    private attachDryCapture(ctx: AudioContext, source: AudioNode, monitor: GainNode, sink: MediaStreamAudioDestinationNode): void {
         const factory = (ctx as AudioContext & { createScriptProcessor?: (size: number, inputs: number, outputs: number) => ScriptProcessorNode }).createScriptProcessor
         if (factory == null) {
             this.failed = 'This browser cannot record a loop.'
@@ -170,6 +242,7 @@ export class LoopEngine {
         }
         source.connect(processor)
         processor.connect(monitor)
+        processor.connect(sink)
         this.processor = processor
         this.tuned = false
         this.failed = 'Auto-tune is off in this browser. The loop is still your voice.'
@@ -197,10 +270,19 @@ export class LoopEngine {
 
     async play(): Promise<void> {
         this.prime()
-        await this.ensure()
-        const ctx = this.ctx
-        if (ctx == null) return
-        if (ctx.state === 'suspended') await ctx.resume()
+        const ctx = this.context()
+        if (ctx == null) {
+            this.failed = 'This browser cannot play a loop.'
+            throw new Error(this.failed)
+        }
+        if (needsAudioResume(ctx.state)) {
+            try { await ctx.resume() } catch (err) { /* the next tap will try again */ }
+        }
+        if (needsAudioResume(ctx.state)) {
+            this.failed = 'Tap once more so this phone can play the loop.'
+            throw new Error(this.failed)
+        }
+        this.failed = ''
         if (this.playing) return
         this.startedAt = ctx.currentTime
         this.playing = true
@@ -305,7 +387,13 @@ export class LoopEngine {
         await this.ensure()
         const ctx = this.ctx
         if (ctx == null) return
-        if (ctx.state === 'suspended') await ctx.resume()
+        if (needsAudioResume(ctx.state)) {
+            try { await ctx.resume() } catch (err) { /* needs a gesture */ }
+        }
+        if (needsAudioResume(ctx.state)) {
+            this.failed = 'Tap once more so this phone can play the loop.'
+            throw new Error(this.failed)
+        }
         if (this.recording != null && this.recording.id === id) {
             if (this.recording.free && this.recording.phase === 'recording') this.finish(true)
             else {
@@ -469,12 +557,20 @@ export class LoopEngine {
         track.buffer = buffer
         if (track.bars === 'free') track.freeSeconds = mixed.length / ctx.sampleRate
         this.failed = this.tuned ? '' : 'Auto-tune is off in this browser. The loop is still your voice.'
-        if (this.playing) {
-            const duration = buffer.duration
-            const elapsed = ctx.currentTime - this.startedAt
+        const trackId = take.id
+        // Start on the next turn. Doing it inside the worklet message can
+        // schedule the take in a render quantum that already passed, so the
+        // loop stays silent even though the buffer has the voice in it.
+        Promise.resolve().then(() => {
+            const live = this.ctx
+            const playing = this.tracks.get(trackId)
+            if (!this.playing || live == null || playing == null || playing.buffer == null) return
+            const duration = playing.buffer.duration
+            const elapsed = live.currentTime - this.startedAt
             const offset = ((elapsed % duration) + duration) % duration
-            this.startSource(track, offset, ctx.currentTime)
-        }
+            this.startSource(playing, offset, live.currentTime)
+            this.onUpdate()
+        })
         this.onUpdate()
     }
 
