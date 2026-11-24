@@ -93,10 +93,13 @@ function schedulePoints(from, to, bpm, loopLength, gaps, startBar, endBar) {
         const soundEnd = Math.min(soundStart + cyc.loop, win.end)
         if (soundEnd <= from || soundStart >= to) continue
         const begin = Math.max(soundStart, from)
+        // songTime is when this slice should be heard. cycle is the stable
+        // downbeat, so a late take can start mid-loop without being stacked.
         points.push({
-            songTime: soundStart,
+            songTime: begin,
             offset: begin - soundStart,
             duration: soundEnd - begin,
+            cycle: soundStart,
         })
     }
     return points
@@ -273,12 +276,72 @@ function freshLibrary() {
     return { version: SCHEMA, activeId: song.id, songs: [song] }
 }
 
+/** The first looper builds autosaved these empty starter tracks. */
+const DEMO_IDS = { vocals: true, harmony: true, beatbox: true, bass: true }
+const DEMO_SEED = ['harmony', 'beatbox', 'bass']
+
+function emptyShell(song) {
+    return defaultSong({
+        id: song.id,
+        name: song.name,
+        bpm: song.bpm,
+        songBars: song.songBars,
+        updated: song.updated,
+    })
+}
+
+/**
+ * Drop the autosaved starter rows. A phone that already recorded keeps that
+ * one take on a single track. Empty extra rows (Track 5 and the rest) go away
+ * with the seed, because they were never audio.
+ */
+function dropEmptyDemo(song) {
+    const seeded = DEMO_SEED.every((id) => song.tracks.some((track) => track.id === id))
+    if (seeded) {
+        const voiced = song.tracks.find((track) => track.audioId)
+        const base = emptyShell(song)
+        if (voiced != null && voiced.audioId) {
+            base.tracks = [defaultTrack({
+                id: 'track-1',
+                name: 'Track 1',
+                bars: voiced.bars === 'free' || voiced.bars === 1 || voiced.bars === 2 || voiced.bars === 4 || voiced.bars === 8 ? voiced.bars : 'free',
+                strength: 0,
+                bypass: voiced.bypass,
+                audioId: voiced.audioId,
+                volume: voiced.volume,
+                endBar: 16,
+            })]
+        }
+        return base
+    }
+    const kept = song.tracks.filter((track) => !(DEMO_IDS[track.id] && !track.audioId))
+    if (kept.length === song.tracks.length) return song
+    if (!kept.some((track) => track.audioId)) return emptyShell(song)
+    return Object.assign({}, song, { tracks: kept })
+}
+
+function finishLoadedSong(song) {
+    const stripped = dropEmptyDemo(song)
+    const revisions = Array.isArray(song.revisions) ? song.revisions : []
+    stripped.revisions = revisions.map((revision) => {
+        const inner = dropEmptyDemo(revision.song)
+        inner.revisions = []
+        return {
+            id: revision.id,
+            at: revision.at,
+            label: revision.label,
+            song: inner,
+        }
+    })
+    return stripped
+}
+
 function migrate(raw) {
     if (raw == null || typeof raw !== 'object') return freshLibrary()
     const songs = Array.isArray(raw.songs) ? raw.songs.map((song) => {
         const next = defaultSong(song)
         next.revisions = Array.isArray(song.revisions) ? song.revisions.slice(-MAX_REVISIONS).map(cleanRevision) : []
-        return next
+        return finishLoadedSong(next)
     }) : []
     if (songs.length === 0) return freshLibrary()
     const activeId = songs.some((song) => song.id === raw.activeId) ? raw.activeId : songs[0].id
