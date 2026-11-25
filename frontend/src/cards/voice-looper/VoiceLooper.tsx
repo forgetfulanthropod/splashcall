@@ -668,6 +668,7 @@ export default function VoiceLooper(): JSX.Element {
             <Add type="button" id="VoiceLooperAdd" onClick={addTrack}>Add track</Add>
         </List>
         </Scroller>
+        <DockScrim aria-hidden="true" />
         <PlayBar>
             <PlayPanel>
             <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
@@ -1000,8 +1001,20 @@ const PlayPanel = styled.div`
     padding: 0 8px;
     box-sizing: border-box;
     border-radius: 28px;
-    background: rgb(223 229 236 / 92%);
+    background: #DFE5EC;
     box-shadow: 0 8px 24px rgb(31 42 36 / 12%);
+`
+
+const DockScrim = styled.div`
+    position: fixed;
+    z-index: 4;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    /* 24px fade, then opaque from the transport top (78px offset + 92px pill) to the screen bottom. */
+    height: calc(194px + env(safe-area-inset-bottom));
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgb(223 229 236 / 0), #DFE5EC 24px);
 `
 
 const MeterButton = styled.button`
@@ -1344,7 +1357,7 @@ const List = styled.div`
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 8px 16px calc(204px + env(safe-area-inset-bottom));
+    padding: 8px 16px calc(186px + env(safe-area-inset-bottom));
 `
 
 const Row = styled.div`
