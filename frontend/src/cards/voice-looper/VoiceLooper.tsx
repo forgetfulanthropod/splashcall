@@ -10,6 +10,7 @@ import { centsBetween, estimatePitch, listenPlan, listenToVocal, localWand, rend
 import { drawWaveform, testVoice, waveformHasEnergy } from './waveform'
 import { keepAwake, readLibrary, recallAudio, rememberAudio, retainAudio, writeLibrary } from './store'
 import { barSeconds, keyLabel, NOTES, ScaleName } from './theory'
+import { clampVolume, meterScale, pieWedge, volumeFromGesture } from './pie'
 
 const SCALES: ScaleName[] = ['Major', 'Minor', 'Dorian', 'Mixolydian', 'Pentatonic']
 const LENGTHS: LoopLength[] = [1, 2, 4, 8, 'free']
@@ -132,9 +133,14 @@ export default function VoiceLooper(): JSX.Element {
                 setClock(pos)
             }
             const heard = loop.level()
+            const playing = loop.outputLevel()
             if (now - levelAt > 70) {
                 levelAt = now
-                setLevel(heard)
+                setLevel({
+                    ...heard,
+                    rms: Math.max(heard.rms, playing.rms),
+                    peak: Math.max(heard.peak, playing.peak),
+                })
             }
             const canvas = waveRef.current
             if (canvas != null) drawWave(canvas, loop.waveform())
@@ -616,7 +622,7 @@ export default function VoiceLooper(): JSX.Element {
                         <IconButton type="button" aria-label={'Rename ' + track.name} onClick={() => setEditing(track.id)}>
                             <Pencil />
                         </IconButton>
-                        <GainDial label={track.name + ' volume'} value={track.volume} onChange={(volume) => patch(track.id, { volume })} />
+                        <VolumePie label={track.name + ' volume'} value={track.volume} onChange={(volume) => patch(track.id, { volume })} />
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{keyLabel(track.root, track.scale)}</Chip>
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{track.bypass ? 'off' : track.strength + '%'}</Chip>
                     </RowLine>
@@ -665,7 +671,9 @@ export default function VoiceLooper(): JSX.Element {
                 {clock.playing ? <Pause /> : <Triangle />}
             </Play>
             <Round type="button" id="VoiceLooperStop" aria-label="Stop" onClick={onStop}><Square /></Round>
-            <Round type="button" aria-label={sheetOpen ? 'Close song tools' : 'Open song tools'} onClick={() => setSheetOpen((open) => !open)}>{sheetOpen ? '▾' : '▴'}</Round>
+            <Round type="button" aria-label={sheetOpen ? 'Close song tools' : 'Open song tools'} onClick={() => setSheetOpen((open) => !open)}>
+                <Chevron $up={!sheetOpen} />
+            </Round>
             <MeterButton
                 type="button"
                 id="VoiceLooperMeter"
@@ -676,9 +684,13 @@ export default function VoiceLooper(): JSX.Element {
                     setSheetOpen(true)
                 }}
             >
-                {[0, 1, 2, 3].map((bar) =>
-                    <MeterBar key={bar} $on={level.rms > 0.012 * (bar + 1)} $hot={level.hearing} />
-                )}
+                <MeterSlots>
+                    {[0, 1, 2, 3].map((bar) => {
+                        const scale = meterScale(level.rms, bar)
+                        const lit = scale > 0.42
+                        return <MeterBar key={bar} $on={lit} $hot={level.hearing && lit} style={{ transform: 'scaleY(' + scale.toFixed(3) + ')' }} />
+                    })}
+                </MeterSlots>
             </MeterButton>
             {clock.phase === 'recording' && !level.hearing && clock.elapsed > 1.2 &&
                 <MeterHint role="status">{error != null && error.toLowerCase().indexOf('microphone') >= 0 ? 'Mic blocked' : 'Can\'t hear you'}</MeterHint>}
@@ -797,28 +809,48 @@ function TrackWave(props: { peaks?: Float32Array, progress: number, label: strin
     </WaveBox>
 }
 
-function GainDial(props: { label: string, value: number, onChange: (value: number) => void }): JSX.Element {
-    const drag = useRef<{ y: number, value: number } | null>(null)
+function VolumePie(props: { label: string, value: number, onChange: (value: number) => void }): JSX.Element {
+    const ref = useRef<HTMLButtonElement | null>(null)
+    const drag = useRef<{ x: number, y: number, value: number } | null>(null)
     const [hot, setHot] = useState(false)
-    const angle = -140 + (props.value / 100) * 280
-    return <Dial
+    const value = clampVolume(props.value)
+    const wedge = pieWedge(value, 22, 22, 16)
+    function bounds(): { left: number, top: number, width: number, height: number } {
+        const el = ref.current
+        if (el == null) return { left: 0, top: 0, width: 44, height: 44 }
+        const rect = el.getBoundingClientRect()
+        return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+    }
+    function nudge(next: number): void {
+        props.onChange(clampVolume(next))
+    }
+    return <PieButton
+        ref={ref}
         type="button"
         $hot={hot}
         role="slider"
         aria-label={props.label}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={Math.round(props.value)}
+        aria-valuenow={value}
+        aria-orientation="vertical"
+        onKeyDown={(event) => {
+            if (event.key === 'ArrowUp' || event.key === 'ArrowRight') nudge(value + 5)
+            else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') nudge(value - 5)
+            else if (event.key === 'Home') nudge(0)
+            else if (event.key === 'End') nudge(100)
+            else return
+            event.preventDefault()
+        }}
         onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId)
-            drag.current = { y: event.clientY, value: props.value }
+            drag.current = { x: event.clientX, y: event.clientY, value }
             setHot(true)
         }}
         onPointerMove={(event) => {
             const start = drag.current
             if (start == null) return
-            const next = Math.max(0, Math.min(100, Math.round(start.value + (start.y - event.clientY) * 0.55)))
-            props.onChange(next)
+            props.onChange(volumeFromGesture(start, { x: event.clientX, y: event.clientY }, bounds()))
         }}
         onPointerUp={() => {
             drag.current = null
@@ -829,9 +861,19 @@ function GainDial(props: { label: string, value: number, onChange: (value: numbe
             setHot(false)
         }}
     >
-        <DialFace style={{ transform: 'rotate(' + angle + 'deg)' }} />
-        {hot && <DialReadout>{Math.round(props.value)}</DialReadout>}
-    </Dial>
+        <svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true">
+            <circle cx="22" cy="22" r="19" fill="#e7edf3" stroke="#c5ced6" strokeWidth="2" />
+            {wedge !== '' ? <path d={wedge} fill="#2f7a45" /> : null}
+            <circle cx="22" cy="22" r="8.5" fill="#e7edf3" />
+        </svg>
+        <PieReadout>{value}</PieReadout>
+    </PieButton>
+}
+
+function Chevron(props: { $up?: boolean }): JSX.Element {
+    return <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style={{ transform: props.$up ? 'none' : 'rotate(180deg)' }}>
+        <path d="M3 10.5 L8 5.5 L13 10.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
 }
 
 function drawWave(canvas: HTMLCanvasElement, wave: Float32Array): void {
@@ -926,30 +968,45 @@ const PlayBar = styled.div`
     bottom: calc(78px + env(safe-area-inset-bottom));
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    justify-content: flex-start;
+    gap: 10px;
+    height: 92px;
+    padding: 0 12px;
+    box-sizing: border-box;
     background: #DFE5EC;
     box-shadow: 0 -8px 18px rgb(150 160 170 / 18%);
 `
 
 const MeterButton = styled.button`
+    width: 56px;
+    height: 48px;
+    margin: 0;
+    padding: 0;
     border: 0;
-    border-radius: 999px;
+    border-radius: 16px;
     background: #e0e5ec;
     box-shadow: ${raised};
-    height: 36px;
-    padding: 0 10px;
     display: flex;
-    align-items: flex-end;
-    gap: 3px;
+    align-items: center;
+    justify-content: center;
+`
+
+const MeterSlots = styled.span`
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 39px;
+    height: 22px;
 `
 
 const MeterBar = styled.span<{ $on?: boolean, $hot?: boolean }>`
-    width: 5px;
-    height: ${p => p.$on ? 16 + 4 : 6}px;
+    width: 6px;
+    height: 22px;
     border-radius: 99px;
-    background: ${p => p.$hot && p.$on ? '#2f7a45' : p.$on ? '#7d8b86' : '#c5ced6'};
-    box-shadow: ${p => p.$hot && p.$on ? '0 0 8px #2f7a45' : 'none'};
+    transform-origin: center center;
+    transition: transform 90ms linear, background-color 90ms linear;
+    background: ${p => p.$hot && p.$on ? '#2f7a45' : p.$on ? '#3d8f57' : '#c5ced6'};
 `
 
 const MeterHint = styled.p`
@@ -1199,7 +1256,7 @@ const WaveHead = styled.div`
     background: #243038;
 `
 
-const Dial = styled.button<{ $hot?: boolean }>`
+const PieButton = styled.button<{ $hot?: boolean }>`
     margin-left: auto;
     width: 44px;
     height: 44px;
@@ -1207,31 +1264,27 @@ const Dial = styled.button<{ $hot?: boolean }>`
     border: 0;
     border-radius: 50%;
     position: relative;
+    padding: 0;
     touch-action: none;
     z-index: ${p => p.$hot ? 40 : 1};
     transform: ${p => p.$hot ? 'scale(2.05)' : 'none'};
-    background: #e0e5ec;
-    box-shadow: ${p => p.$hot ? '0 10px 24px rgb(36 48 56 / 28%)' : raised};
+    background: transparent;
+    box-shadow: ${p => p.$hot ? '0 10px 24px rgb(36 48 56 / 28%)' : 'none'};
+    svg { display: block; }
 `
 
-const DialFace = styled.span`
+const PieReadout = styled.span`
     position: absolute;
-    left: 20px;
-    top: 6px;
-    width: 4px;
-    height: 14px;
-    border-radius: 99px;
-    background: #1f6b3a;
-`
-
-const DialReadout = styled.span`
-    position: absolute;
-    left: 50%;
-    top: -18px;
-    transform: translateX(-50%);
-    font-size: 13px;
+    left: 0;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    text-align: center;
+    font-size: 11px;
     font-weight: 750;
-    color: #243038;
+    line-height: 1;
+        pointer-events: none;
+        color: #243038;
 `
 
 const List = styled.div`
