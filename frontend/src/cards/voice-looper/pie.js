@@ -78,12 +78,12 @@ function pieWedge(volume, cx, cy, radius) {
         + ' Z'
 }
 
-/** Even meter bars. 0 is a short centered tick. 1 fills the slot. */
+/** Even meter bars in a 22px slot. Idle is a 6px bar, not a dot. */
 function meterScale(rms, index) {
     const start = index * 0.018
     const span = 0.022
     const t = Math.max(0, Math.min(1, ((rms > 0 ? rms : 0) - start) / span))
-    return 0.36 + 0.64 * t
+    return (6 + 16 * t) / 22
 }
 
 module.exports = {

@@ -624,7 +624,7 @@ export default function VoiceLooper(): JSX.Element {
                         </IconButton>
                         <VolumePie label={track.name + ' volume'} value={track.volume} onChange={(volume) => patch(track.id, { volume })} />
                         <Chip type="button" onClick={() => setSheetId(track.id)}>{keyLabel(track.root, track.scale)}</Chip>
-                        <Chip type="button" onClick={() => setSheetId(track.id)}>{track.bypass ? 'off' : track.strength + '%'}</Chip>
+                        <Chip type="button" onClick={() => setSheetId(track.id)}>{tuneLabel(track)}</Chip>
                     </RowLine>
                     <RowLine>
                         {LENGTHS.map((length) =>
@@ -667,6 +667,7 @@ export default function VoiceLooper(): JSX.Element {
             <Add type="button" id="VoiceLooperAdd" onClick={addTrack}>Add track</Add>
         </List>
         <PlayBar>
+            <PlayPanel>
             <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
                 {clock.playing ? <Pause /> : <Triangle />}
             </Play>
@@ -687,13 +688,14 @@ export default function VoiceLooper(): JSX.Element {
                 <MeterSlots>
                     {[0, 1, 2, 3].map((bar) => {
                         const scale = meterScale(level.rms, bar)
-                        const lit = scale > 0.42
+                        const lit = scale > 6 / 22 + 0.05
                         return <MeterBar key={bar} $on={lit} $hot={level.hearing && lit} style={{ transform: 'scaleY(' + scale.toFixed(3) + ')' }} />
                     })}
                 </MeterSlots>
             </MeterButton>
             {clock.phase === 'recording' && !level.hearing && clock.elapsed > 1.2 &&
                 <MeterHint role="status">{error != null && error.toLowerCase().indexOf('microphone') >= 0 ? 'Mic blocked' : 'Can\'t hear you'}</MeterHint>}
+            </PlayPanel>
         </PlayBar>
         {sheetOpen && <PlaySheet
             song={song}
@@ -789,7 +791,7 @@ export default function VoiceLooper(): JSX.Element {
                     onChange={(event) => patch(sheet.id, { volume: Number(event.target.value) })}
                 />
                 <Chip type="button" $on={sheet.bypass} onClick={() => patch(sheet.id, { bypass: !sheet.bypass })}>
-                    {sheet.bypass ? 'Bypass on' : 'Bypass'}
+                    {sheet.bypass || sheet.strength <= 0 ? 'Tune off' : 'Tune on'}
                 </Chip>
             </Sheet>
         </SheetBackdrop>}
@@ -814,7 +816,7 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
     const drag = useRef<{ x: number, y: number, value: number } | null>(null)
     const [hot, setHot] = useState(false)
     const value = clampVolume(props.value)
-    const wedge = pieWedge(value, 22, 22, 16)
+    const wedge = pieWedge(value, 18, 18, 14)
     function bounds(): { left: number, top: number, width: number, height: number } {
         const el = ref.current
         if (el == null) return { left: 0, top: 0, width: 44, height: 44 }
@@ -861,13 +863,18 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
             setHot(false)
         }}
     >
-        <svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true">
-            <circle cx="22" cy="22" r="19" fill="#e7edf3" stroke="#c5ced6" strokeWidth="2" />
+        <svg viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
+            <circle cx="18" cy="18" r="16" fill="#e7edf3" />
             {wedge !== '' ? <path d={wedge} fill="#2f7a45" /> : null}
-            <circle cx="22" cy="22" r="8.5" fill="#e7edf3" />
+            <line x1="18" y1="1.5" x2="18" y2="5" stroke="#1f2a24" strokeWidth="1.6" strokeLinecap="round" />
         </svg>
         <PieReadout>{value}</PieReadout>
     </PieButton>
+}
+
+function tuneLabel(track: { bypass: boolean, strength: number }): string {
+    if (track.bypass || track.strength <= 0) return 'Tune off'
+    return 'Tune ' + track.strength + '%'
 }
 
 function Chevron(props: { $up?: boolean }): JSX.Element {
@@ -961,20 +968,28 @@ const raised = '0.22rem 0.22rem 0.45rem rgb(195 193 198 / 90%), -0.12rem -0.12re
 const inset = 'inset 0.15rem 0.15rem 0.35rem rgb(195 193 198 / 90%), inset -0.1rem -0.1rem 0.3rem #fff'
 
 const PlayBar = styled.div`
-    position: absolute;
+    position: fixed;
     z-index: 20;
-    left: 10px;
+    left: 0;
     right: 120px;
     bottom: calc(78px + env(safe-area-inset-bottom));
     display: flex;
+    justify-content: center;
+    pointer-events: none;
+`
+
+const PlayPanel = styled.div`
+    pointer-events: auto;
+    display: flex;
     align-items: center;
-    justify-content: flex-start;
-    gap: 10px;
+    justify-content: center;
+    gap: 6px;
     height: 92px;
     padding: 0 12px;
     box-sizing: border-box;
-    background: #DFE5EC;
-    box-shadow: 0 -8px 18px rgb(150 160 170 / 18%);
+    border-radius: 28px;
+    background: rgb(223 229 236 / 92%);
+    box-shadow: 0 8px 24px rgb(31 42 36 / 12%);
 `
 
 const MeterButton = styled.button`
@@ -1006,7 +1021,7 @@ const MeterBar = styled.span<{ $on?: boolean, $hot?: boolean }>`
     border-radius: 99px;
     transform-origin: center center;
     transition: transform 90ms linear, background-color 90ms linear;
-    background: ${p => p.$hot && p.$on ? '#2f7a45' : p.$on ? '#3d8f57' : '#c5ced6'};
+    background: ${p => p.$hot && p.$on ? '#2f7a45' : p.$on ? '#3d8f57' : '#b8c2cc'};
 `
 
 const MeterHint = styled.p`
@@ -1266,32 +1281,46 @@ const PieButton = styled.button<{ $hot?: boolean }>`
     position: relative;
     padding: 0;
     touch-action: none;
-    z-index: ${p => p.$hot ? 40 : 1};
-    transform: ${p => p.$hot ? 'scale(2.05)' : 'none'};
-    background: transparent;
-    box-shadow: ${p => p.$hot ? '0 10px 24px rgb(36 48 56 / 28%)' : 'none'};
-    svg { display: block; }
+    outline: none;
+    z-index: ${p => p.$hot ? 50 : 1};
+    transform: ${p => p.$hot ? 'translateY(-40px) scale(1.85)' : 'none'};
+    background: ${p => p.$hot ? '#f7f9f8' : 'transparent'};
+    box-shadow: ${p => p.$hot ? '0 10px 28px rgb(31 42 36 / 22%)' : 'none'};
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    svg { display: block; width: 36px; height: 36px; }
+    &:focus-visible {
+        outline: 2px solid rgb(47 122 69 / 40%);
+        outline-offset: 2px;
+    }
 `
 
 const PieReadout = styled.span`
     position: absolute;
-    left: 0;
-    right: 0;
+    left: 50%;
     top: 50%;
-    transform: translateY(-50%);
-    text-align: center;
+    width: 24px;
+    height: 14px;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: #fff;
     font-size: 11px;
-    font-weight: 750;
+    font-weight: 700;
     line-height: 1;
-        pointer-events: none;
-        color: #243038;
+    letter-spacing: -0.03em;
+    pointer-events: none;
+    color: #1f2a24;
 `
 
 const List = styled.div`
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 8px 16px calc(210px + env(safe-area-inset-bottom));
+    padding: 8px 16px calc(186px + env(safe-area-inset-bottom));
 `
 
 const Row = styled.div`
