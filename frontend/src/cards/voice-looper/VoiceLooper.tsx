@@ -543,6 +543,7 @@ export default function VoiceLooper(): JSX.Element {
     }
 
     return <Root>
+        <Scroller>
         <Header>
             <Title>Voice Looper</Title>
             <Subtitle>On a call with {peer} · 4/4 · {bpm} BPM</Subtitle>
@@ -666,6 +667,7 @@ export default function VoiceLooper(): JSX.Element {
             })}
             <Add type="button" id="VoiceLooperAdd" onClick={addTrack}>Add track</Add>
         </List>
+        </Scroller>
         <PlayBar>
             <PlayPanel>
             <Play type="button" id="VoiceLooperPlay" aria-label={clock.playing ? 'Pause' : 'Play'} onClick={onPlay}>
@@ -815,6 +817,8 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
     const ref = useRef<HTMLButtonElement | null>(null)
     const drag = useRef<{ x: number, y: number, value: number } | null>(null)
     const [hot, setHot] = useState(false)
+    const [keyFocus, setKeyFocus] = useState(false)
+    const fromPointer = useRef(false)
     const value = clampVolume(props.value)
     const wedge = pieWedge(value, 18, 18, 14)
     function bounds(): { left: number, top: number, width: number, height: number } {
@@ -830,12 +834,14 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
         ref={ref}
         type="button"
         $hot={hot}
+        $key={keyFocus}
         role="slider"
         aria-label={props.label}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={value}
         aria-orientation="vertical"
+        onFocus={() => { if (!fromPointer.current) setKeyFocus(true) }}
         onKeyDown={(event) => {
             if (event.key === 'ArrowUp' || event.key === 'ArrowRight') nudge(value + 5)
             else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') nudge(value - 5)
@@ -844,7 +850,10 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
             else return
             event.preventDefault()
         }}
+        onBlur={() => setKeyFocus(false)}
         onPointerDown={(event) => {
+            fromPointer.current = true
+            setKeyFocus(false)
             event.currentTarget.setPointerCapture(event.pointerId)
             drag.current = { x: event.clientX, y: event.clientY, value }
             setHot(true)
@@ -855,16 +864,18 @@ function VolumePie(props: { label: string, value: number, onChange: (value: numb
             props.onChange(volumeFromGesture(start, { x: event.clientX, y: event.clientY }, bounds()))
         }}
         onPointerUp={() => {
+            fromPointer.current = false
             drag.current = null
             setHot(false)
         }}
         onPointerCancel={() => {
+            fromPointer.current = false
             drag.current = null
             setHot(false)
         }}
     >
         <svg viewBox="0 0 36 36" width="36" height="36" aria-hidden="true">
-            <circle cx="18" cy="18" r="16" fill="#e7edf3" />
+            <circle cx="18" cy="18" r="15.25" fill="#e7edf3" stroke="#b8c2cc" strokeWidth="1.5" />
             {wedge !== '' ? <path d={wedge} fill="#2f7a45" /> : null}
             <line x1="18" y1="1.5" x2="18" y2="5" stroke="#1f2a24" strokeWidth="1.6" strokeLinecap="round" />
         </svg>
@@ -970,11 +981,11 @@ const inset = 'inset 0.15rem 0.15rem 0.35rem rgb(195 193 198 / 90%), inset -0.1r
 const PlayBar = styled.div`
     position: fixed;
     z-index: 20;
-    left: 0;
-    right: 120px;
+    /* Equal insets inside the space left of the card switcher (60px button + 15px inset). */
+    left: 12px;
+    right: 87px;
     bottom: calc(78px + env(safe-area-inset-bottom));
     display: flex;
-    justify-content: center;
     pointer-events: none;
 `
 
@@ -982,10 +993,11 @@ const PlayPanel = styled.div`
     pointer-events: auto;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-evenly;
     gap: 6px;
+    width: 100%;
     height: 92px;
-    padding: 0 12px;
+    padding: 0 8px;
     box-sizing: border-box;
     border-radius: 28px;
     background: rgb(223 229 236 / 92%);
@@ -1034,8 +1046,8 @@ const MeterHint = styled.p`
 const MeterSheet = styled.section`
     position: absolute;
     z-index: 30;
-    left: 10px;
-    right: 120px;
+    left: 12px;
+    right: 87px;
     bottom: calc(146px + env(safe-area-inset-bottom));
     max-height: 62vh;
     overflow: auto;
@@ -1086,14 +1098,23 @@ const Clip = styled.span<{ $on?: boolean }>`
 const Root = styled.div`
     position: absolute;
     inset: 0;
-    overflow: auto;
     background: #DFE5EC;
     color: #243038;
     touch-action: manipulation;
 `
 
+const Scroller = styled.div`
+    position: absolute;
+    /* The floating hand occupies the top-right corner. The scrollport starts below it. */
+    top: calc(90px + env(safe-area-inset-top));
+    right: 0;
+    bottom: 0;
+    left: 0;
+    overflow: auto;
+`
+
 const Header = styled.header`
-    padding: calc(18px + env(safe-area-inset-top)) 16px 8px;
+    padding: 6px 16px 8px;
 `
 
 const Title = styled.h1`
@@ -1123,9 +1144,14 @@ const Round = styled.button`
     background: #e0e5ec;
     box-shadow: ${raised};
     color: #243038;
+    outline: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    &:focus-visible {
+        outline: 2px solid rgb(47 122 69 / 40%);
+        outline-offset: 2px;
+    }
 `
 
 const Play = styled(Round)`
@@ -1271,7 +1297,7 @@ const WaveHead = styled.div`
     background: #243038;
 `
 
-const PieButton = styled.button<{ $hot?: boolean }>`
+const PieButton = styled.button<{ $hot?: boolean, $key?: boolean }>`
     margin-left: auto;
     width: 44px;
     height: 44px;
@@ -1290,10 +1316,8 @@ const PieButton = styled.button<{ $hot?: boolean }>`
     align-items: center;
     justify-content: center;
     svg { display: block; width: 36px; height: 36px; }
-    &:focus-visible {
-        outline: 2px solid rgb(47 122 69 / 40%);
-        outline-offset: 2px;
-    }
+    &:focus { outline: none; }
+    ${p => p.$key ? '&:focus { outline: 2px solid rgb(47 122 69 / 40%); outline-offset: 2px; }' : ''}
 `
 
 const PieReadout = styled.span`
@@ -1320,7 +1344,7 @@ const List = styled.div`
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 8px 16px calc(186px + env(safe-area-inset-bottom));
+    padding: 8px 16px calc(204px + env(safe-area-inset-bottom));
 `
 
 const Row = styled.div`
