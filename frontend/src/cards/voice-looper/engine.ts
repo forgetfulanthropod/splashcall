@@ -3,6 +3,7 @@ import { driveAt, placement, schedulePoints, sectionDrive, shaperSamples, songSe
 import { barSeconds, loopSeconds, recordDownbeat, scalePitchClasses } from './theory'
 import { TUNER_SOURCE } from './workletSource'
 import { makeup, peaksPerPixel } from './waveform'
+import { gainFromVolume } from './pie'
 
 export type TuneSettings = {
     root: number
@@ -620,7 +621,7 @@ export class LoopEngine {
     }
 
     setGain(id: string, volume: number, muted: boolean): void {
-        const level = muted ? 0 : Math.max(0, Math.min(1, volume / 100))
+        const level = gainFromVolume(volume, muted)
         this.levels.set(id, level)
         const track = this.tracks.get(id)
         if (track != null) track.gain.gain.value = level
